@@ -1,0 +1,19 @@
+# 源码构建覆盖层：与 docker-compose.sqlite.yml 叠加使用
+#
+#   docker compose -f docker-compose.sqlite.yml -f docker-compose.sqlite.build.yml up -d --build
+#
+# 为什么需要它：docker-compose.sqlite.yml 里 codex2api 只有 `image:` 没有 `build:`，
+# 所以 `up -d --build` 不会构建任何东西，只会继续跑 ghcr 上的官方镜像。
+# 本文件补上 build，并锁定本地镜像名 + pull_policy: never，避免被拉回官方镜像。
+#
+# project name（codex2api-sqlite）与数据卷（codex2api-sqlite_sqlite-data）都沿用
+# 原文件，账号/Key/用量数据不会丢。
+services:
+  codex2api:
+    image: codex2api-sqlite:local
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        BUILD_VERSION: ${BUILD_VERSION:-v3.1.4-workbuddy}
+    pull_policy: never
