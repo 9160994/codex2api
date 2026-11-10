@@ -6015,7 +6015,8 @@
       "scopeSkipStat": "skipped {{count}} request(s) because of this budget (last {{time}})",
       "scopeSelfLockWarning": "This is the only group this key may use - once the budget runs out there is nowhere to fall back to, which disables the key entirely.",
       "scopeBadgeExhausted": "budget exhausted {{count}}/{{total}}",
-      "scopeBadgeActive": "budget {{percent}}% ({{window}})"
+      "scopeBadgeActive": "budget {{percent}}% ({{window}})",
+      "upstreamChannelWorkBuddy": "WorkBuddy"
     },
     "allowedGroupsLabel": "Allowed Account Groups",
     "allowedGroupsPlaceholder": "Choose allowed groups",

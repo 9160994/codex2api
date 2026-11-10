@@ -348,7 +348,8 @@
         "grok": "此 Key 只調度 Grok 帳號，並使用該渠道的模型目錄。",
         "antigravity": "此 Key 只調度 Google Antigravity 帳號，並使用 Gemini 模型目錄。",
         "claude": "此 Key 只調度 Claude 帳號，並使用 Claude 模型目錄。"
-      }
+      },
+      "upstreamChannelWorkBuddy": "WorkBuddy"
     }
   },
   "workbuddy": {

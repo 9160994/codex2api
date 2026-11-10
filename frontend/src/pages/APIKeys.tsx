@@ -149,7 +149,7 @@ interface LimitsFormState {
 }
 
 type ImageGenerationPolicy = "allow" | "strip" | "block";
-type UpstreamChannel = "auto" | "codex" | "grok" | "antigravity" | "claude";
+type UpstreamChannel = "auto" | "codex" | "grok" | "antigravity" | "claude" | "workbuddy";
 
 // ScopeLimitFormState 是「该 Key × 某分组/账号」预算的一行表单（issue #439）。
 // 数值统一按字符串保存,空串表示不限,与其它限额字段一致。
@@ -2878,10 +2878,15 @@ function UpstreamChannelPicker({
       label: t("apiKeys.limits.upstreamChannelClaude"),
       icon: <ChannelLogo channel="claude" size={18} />,
     },
+    {
+      key: "workbuddy",
+      label: t("apiKeys.limits.upstreamChannelWorkBuddy"),
+      icon: <ChannelLogo channel="workbuddy" size={18} />,
+    },
   ];
   return (
     <div>
-      <div className="grid grid-cols-5 gap-1 rounded-xl border border-border bg-muted/30 p-1">
+      <div className="grid grid-cols-6 gap-1 rounded-xl border border-border bg-muted/30 p-1">
         {options.map(({ key, label, icon }) => (
           <button
             key={key}
