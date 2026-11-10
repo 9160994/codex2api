@@ -212,6 +212,17 @@ func (h *Handler) scopedModelRecords(ctx context.Context, row *database.APIKeyRo
 				addTarget(alias)
 			}
 
+		case account.IsWorkBuddy():
+			// WorkBuddy 渠道只暴露账号自己的模型目录（上游模型名的裸 id，
+			// 不加 cn:/global: 前缀：渠道已由 Key 的 upstream_channel 隔离）。
+			for _, id := range account.WorkBuddyModels() {
+				if strings.TrimSpace(id) == "" {
+					continue
+				}
+				addScopedModel(records, id, modelBackingRelay, time.Time{}, false)
+				addTarget(id)
+			}
+
 		case account.IsAntigravityAPI():
 			if !account.AntigravityDispatchEnabled() {
 				continue
@@ -293,7 +304,7 @@ func (h *Handler) scopedModelRecords(ctx context.Context, row *database.APIKeyRo
 			delete(records, key)
 		}
 	}
-	if row.Limits.AllowLive {
+	if row.Limits.AllowLive && row.Limits.ResolveUpstreamChannel() != database.UpstreamChannelWorkBuddy {
 		for _, id := range liveModelAliases {
 			if liveModelExplicitlyDenied(id, row.Limits.ModelDeny) {
 				continue

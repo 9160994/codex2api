@@ -240,6 +240,8 @@ type Account struct {
 	// ClaudeAuthKind 见 claude_auth_kind.go:Claude 凭据形态(oauth / setup_token / api_key)。
 	ClaudeAuthKind string
 	ClaudeBaseURL  string
+	// WorkBuddyRealm 是 WorkBuddy 账号所在域（cn / global），决定上游 base 与出站头语言。
+	WorkBuddyRealm string
 	// Claude Code platform/version policy overrides. Empty values inherit the
 	// corresponding global policy from Store.
 	ClaudeClientPlatformOverride string
@@ -625,6 +627,11 @@ func (a *Account) hasDispatchCredentialLocked() bool {
 	if a.isGrokAPILocked() {
 		// API Key 直接可调度；OAuth 需等 AT 刷出（RT-only 由后台/lazy 刷新补齐）
 		return strings.TrimSpace(a.APIKey) != "" || strings.TrimSpace(a.AccessToken) != ""
+	}
+	if a.isWorkBuddyLocked() {
+		// WorkBuddy 的 access token 存在 api_key；纯 refresh token 账号在被
+		// 惰性刷新补出 AT 之前也算可调度（否则导入后永远选不到它去刷新）。
+		return strings.TrimSpace(a.APIKey) != "" || strings.TrimSpace(a.RefreshToken) != ""
 	}
 	if a.isCodexAgentIdentityLocked() {
 		// Agent Identity 无 AT：私钥即凭据，可直接调度（task_id 于请求前惰性注册）。
@@ -6201,11 +6208,15 @@ func (s *Store) buildAccountFromRow(ctx context.Context, row *database.AccountRo
 	}
 	isGrokAccount := strings.EqualFold(strings.TrimSpace(upstreamType), UpstreamGrok) && (strings.TrimSpace(apiKey) != "" || rt != "" || at != "")
 	isAntigravityAccount := strings.EqualFold(strings.TrimSpace(upstreamType), UpstreamAntigravity) && (strings.TrimSpace(apiKey) != "" || rt != "" || at != "")
+	// WorkBuddy 渠道：access token 存 api_key，refresh token 存 workbuddy_refresh_token。
+	// 两者任一存在即视为有效账号行（纯 RT 账号在首次刷新前也要能在列表里出现）。
+	isWorkBuddyAccount := strings.EqualFold(strings.TrimSpace(upstreamType), UpstreamWorkBuddy) &&
+		(strings.TrimSpace(apiKey) != "" || strings.TrimSpace(row.GetCredential(WorkBuddyRefreshTokenCredentialKey)) != "")
 	// Agent Identity：无 AT/RT，凭 agent_private_key 动态签名，不能被下面的空凭据 guard 拒绝。
 	isAgentIdentityAccount := strings.EqualFold(strings.TrimSpace(row.GetCredential("auth_mode")), CodexAuthModeAgentIdentity) &&
 		strings.TrimSpace(row.GetCredential("agent_runtime_id")) != "" &&
 		strings.TrimSpace(row.GetCredential("agent_private_key")) != ""
-	if rt == "" && st == "" && at == "" && !isOpenAIResponsesAccount && !isGrokAccount && !isAntigravityAccount && !isAgentIdentityAccount {
+	if rt == "" && st == "" && at == "" && !isOpenAIResponsesAccount && !isGrokAccount && !isAntigravityAccount && !isAgentIdentityAccount && !isWorkBuddyAccount {
 		log.Printf("[账号 %d] 缺少 refresh_token、session_token 和 access_token，跳过", row.ID)
 		return nil
 	}
@@ -6268,6 +6279,33 @@ func (s *Store) buildAccountFromRow(ctx context.Context, row *database.AccountRo
 		if strings.TrimSpace(apiKey) != "" {
 			account.HealthTier = HealthTierHealthy
 			account.PlanType = "api"
+		}
+	}
+	if isWorkBuddyAccount {
+		account.WorkBuddyRealm = NormalizeWorkBuddyRealm(row.GetCredential(WorkBuddyRealmCredentialKey))
+		account.AccountID = strings.TrimSpace(row.GetCredential(WorkBuddyUIDCredentialKey))
+		if account.AccountID == "" {
+			account.AccountID = strings.TrimSpace(row.GetCredential("account_id"))
+		}
+		account.RefreshToken = strings.TrimSpace(row.GetCredential(WorkBuddyRefreshTokenCredentialKey))
+		if nickname := strings.TrimSpace(row.GetCredential(WorkBuddyNicknameCredentialKey)); nickname != "" {
+			account.Email = nickname
+		}
+		account.HealthTier = HealthTierHealthy
+		if strings.TrimSpace(account.PlanType) == "" {
+			account.PlanType = "workbuddy"
+		}
+		if raw := strings.TrimSpace(row.GetCredential(WorkBuddyExpiresAtCredentialKey)); raw != "" {
+			if parsed, parseErr := time.Parse(time.RFC3339, raw); parseErr == nil {
+				account.ExpiresAt = parsed
+			}
+		}
+		if account.BaseURL == "" {
+			if account.WorkBuddyRealm == WorkBuddyRealmGlobal {
+				account.BaseURL = WorkBuddyBaseURLGlobal
+			} else {
+				account.BaseURL = WorkBuddyBaseURLCN
+			}
 		}
 	}
 	if isGrokAccount {
@@ -10215,7 +10253,7 @@ func (s *Store) SetAPIKeyUpstreamChannel(apiKeyID int64, channel string) {
 		return
 	}
 	channel = strings.ToLower(strings.TrimSpace(channel))
-	if channel != database.UpstreamChannelCodex && channel != database.UpstreamChannelGrok && channel != database.UpstreamChannelAntigravity && channel != database.UpstreamChannelClaude {
+	if channel != database.UpstreamChannelCodex && channel != database.UpstreamChannelGrok && channel != database.UpstreamChannelAntigravity && channel != database.UpstreamChannelClaude && channel != database.UpstreamChannelWorkBuddy {
 		channel = ""
 	}
 	s.apiKeyGroupsMu.Lock()
@@ -10305,7 +10343,7 @@ func (s *Store) APIKeyAllowsAccount(apiKeyID int64, acc *Account) bool {
 			return false
 		}
 	case database.UpstreamChannelCodex:
-		if acc.IsGrokAPI() || acc.IsAntigravityAPI() || acc.IsClaudeOAuth() {
+		if acc.IsGrokAPI() || acc.IsAntigravityAPI() || acc.IsClaudeOAuth() || acc.IsWorkBuddy() {
 			return false
 		}
 	case database.UpstreamChannelAntigravity:
@@ -10314,6 +10352,10 @@ func (s *Store) APIKeyAllowsAccount(apiKeyID int64, acc *Account) bool {
 		}
 	case database.UpstreamChannelClaude:
 		if !acc.IsClaudeOAuth() {
+			return false
+		}
+	case database.UpstreamChannelWorkBuddy:
+		if !acc.IsWorkBuddy() {
 			return false
 		}
 	}

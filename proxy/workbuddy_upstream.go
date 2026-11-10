@@ -1,0 +1,426 @@
+package proxy
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
+
+	"github.com/codex2api/auth"
+)
+
+// WorkBuddy 上游适配器。
+//
+// 与 Codex / Grok / Antigravity 不同，WorkBuddy 上游只说 OpenAI Chat Completions：
+//   - 请求：POST {base}/v2/chat/completions（SSE）
+//   - 鉴权：Authorization: Bearer <accessToken> + X-User-Id / X-Domain / X-CodeBuddy-Request
+//   - 刷新：POST {base}/v2/plugin/auth/token/refresh，头 X-Refresh-Token
+//
+// 因此渠道只对 /v1/chat/completions 与 /v1/models 开放；Responses / Anthropic
+// Messages 走协议翻译不在本期范围，入口处显式拒绝而不是静默降级。
+const (
+	workBuddyChatPath = auth.WorkBuddyChatPath
+
+	// workBuddyTokenRefreshSkew 到期前多久主动刷新，避免请求正卡在过期点上。
+	workBuddyTokenRefreshSkew = 5 * time.Minute
+	// workBuddyChatTimeout 是单次上游聊天的整体上限；SSE 长输出由调用方 context 控制。
+	workBuddyChatTimeout = 0
+	// workBuddyAggregateLimit 是非流式聚合时允许的最大 SSE 字节数。
+	workBuddyAggregateLimit = 64 << 20
+)
+
+// ExecuteWorkBuddyChatRequest 向 WorkBuddy 上游发起一次 Chat Completions 请求。
+//
+// 客户端请求流式时原样透传 SSE；请求非流式时强制上游流式，并在网关侧聚合为
+// 单个 chat.completion（上游不保证支持非流式，聚合口径与 wb2api 一致）。
+func ExecuteWorkBuddyChatRequest(ctx context.Context, account *auth.Account, inboundBody []byte, proxyOverride string, headers http.Header) (*http.Response, error) {
+	if account == nil {
+		return nil, errors.New("workbuddy: account is nil")
+	}
+	if strings.TrimSpace(account.WorkBuddyAccessToken()) == "" {
+		return nil, errors.New("workbuddy: 账号缺少 access token，请重新登录授权")
+	}
+	clientStream := gjson.GetBytes(inboundBody, "stream").Bool()
+	body := prepareWorkBuddyChatBody(inboundBody)
+
+	proxyURL := proxyOverride
+	if strings.TrimSpace(proxyURL) == "" {
+		proxyURL = account.ProxyURL
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, account.WorkBuddyBaseURL()+workBuddyChatPath, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	applyWorkBuddyChatHeaders(req, account, headers)
+
+	client, err := auth.NewWorkBuddyHTTPClient(proxyURL, workBuddyChatTimeout)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if clientStream {
+		return resp, nil
+	}
+	return aggregateWorkBuddyStream(resp)
+}
+
+// applyWorkBuddyChatHeaders 注入 chat 出站头族。
+func applyWorkBuddyChatHeaders(req *http.Request, account *auth.Account, downstream http.Header) {
+	auth.ApplyWorkBuddyCommonHeaders(req, account)
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	req.Header.Set("Authorization", "Bearer "+account.WorkBuddyAccessToken())
+	uid := account.WorkBuddyUID()
+	if uid != "" {
+		req.Header.Set("X-User-Id", uid)
+		req.Header.Set("X-No-Enterprise-Id", "1")
+	}
+	if domain := strings.TrimSpace(downstreamDomain(account)); domain != "" {
+		req.Header.Set("X-Domain", domain)
+	}
+	// 客户端 x-request-id 透传，便于反查；不伪造会话聚合头。
+	if downstream != nil {
+		for _, key := range []string{"X-Request-Id", "X-Conversation-Id"} {
+			if value := strings.TrimSpace(downstream.Get(key)); value != "" {
+				req.Header.Set(key, value)
+			}
+		}
+	}
+}
+
+// downstreamDomain 返回账号声明的 X-Domain：global 域声明 workbuddy.ai，
+// 国内域缺省不发（上游按 Referer 归属）。
+func downstreamDomain(account *auth.Account) string {
+	if account != nil && account.WorkBuddyDomain() == auth.WorkBuddyRealmGlobal {
+		return "www.workbuddy.ai"
+	}
+	return ""
+}
+
+// prepareWorkBuddyChatBody 让上游恒走 SSE：非流式客户端由网关聚合。
+func prepareWorkBuddyChatBody(inboundBody []byte) []byte {
+	body := inboundBody
+	if !gjson.GetBytes(body, "stream").Bool() {
+		body, _ = sjson.SetBytes(body, "stream", true)
+	}
+	if !gjson.GetBytes(body, "stream_options.include_usage").Bool() {
+		body, _ = sjson.SetBytes(body, "stream_options.include_usage", true)
+	}
+	return body
+}
+
+// aggregateWorkBuddyStream 把上游 SSE 聚合成单个 chat.completion。
+//
+// 保留首帧的 id/model/created，逐帧合并 choices[0].delta 的 content / reasoning_content /
+// tool_calls，末帧 usage 原样带出；上游给出非 2xx 时直接把原始响应交回调用方。
+func aggregateWorkBuddyStream(resp *http.Response) (*http.Response, error) {
+	if resp == nil {
+		return nil, errors.New("workbuddy: empty upstream response")
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return resp, nil
+	}
+	defer resp.Body.Close()
+
+	var (
+		id      string
+		model   string
+		created int64
+		content strings.Builder
+		reason  strings.Builder
+		tools   []map[string]any
+		usage   json.RawMessage
+		finish  string
+	)
+	reader := bufio.NewReaderSize(io.LimitReader(resp.Body, workBuddyAggregateLimit), 32*1024)
+	for {
+		line, readErr := reader.ReadBytes('\n')
+		if len(line) > 0 {
+			trimmed := bytes.TrimSpace(line)
+			if bytes.HasPrefix(trimmed, []byte("data:")) {
+				payload := bytes.TrimSpace(bytes.TrimPrefix(trimmed, []byte("data:")))
+				if !bytes.Equal(payload, []byte("[DONE]")) && len(payload) > 0 && json.Valid(payload) {
+					if id == "" {
+						id = gjson.GetBytes(payload, "id").String()
+					}
+					if model == "" {
+						model = gjson.GetBytes(payload, "model").String()
+					}
+					if created == 0 {
+						created = gjson.GetBytes(payload, "created").Int()
+					}
+					if frameUsage := gjson.GetBytes(payload, "usage"); frameUsage.Exists() && frameUsage.Raw != "null" {
+						usage = json.RawMessage(frameUsage.Raw)
+					}
+					delta := gjson.GetBytes(payload, "choices.0.delta")
+					if delta.Exists() {
+						if text := delta.Get("content").String(); text != "" {
+							content.WriteString(text)
+						}
+						if text := delta.Get("reasoning_content").String(); text != "" {
+							reason.WriteString(text)
+						}
+						if calls := delta.Get("tool_calls"); calls.IsArray() {
+							tools = mergeWorkBuddyToolCalls(tools, calls.Array())
+						}
+					}
+					if reason_ := gjson.GetBytes(payload, "choices.0.finish_reason").String(); reason_ != "" {
+						finish = reason_
+					}
+				}
+			}
+		}
+		if readErr != nil {
+			if errors.Is(readErr, io.EOF) {
+				break
+			}
+			return nil, readErr
+		}
+	}
+
+	message := map[string]any{"role": "assistant"}
+	if content.Len() > 0 {
+		message["content"] = content.String()
+	} else {
+		message["content"] = ""
+	}
+	if reason.Len() > 0 {
+		message["reasoning_content"] = reason.String()
+	}
+	if len(tools) > 0 {
+		message["tool_calls"] = tools
+	}
+	if finish == "" {
+		if len(tools) > 0 {
+			finish = "tool_calls"
+		} else {
+			finish = "stop"
+		}
+	}
+	choice := map[string]any{"index": 0, "message": message, "finish_reason": finish}
+	completionID := strings.TrimSpace(id)
+	if completionID == "" {
+		completionID = "chatcmpl-workbuddy"
+	}
+	payload := map[string]any{
+		"id":      completionID,
+		"object":  "chat.completion",
+		"created": created,
+		"model":   model,
+		"choices": []any{choice},
+	}
+	if len(usage) > 0 {
+		payload["usage"] = usage
+	}
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	result := &http.Response{
+		Status:        "200 OK",
+		StatusCode:    http.StatusOK,
+		Proto:         "HTTP/1.1",
+		ProtoMajor:    1,
+		ProtoMinor:    1,
+		Header:        http.Header{},
+		Body:          io.NopCloser(bytes.NewReader(encoded)),
+		ContentLength: int64(len(encoded)),
+		Request:       resp.Request,
+	}
+	result.Header.Set("Content-Type", "application/json")
+	return result, nil
+}
+
+// mergeWorkBuddyToolCalls 按 index 合并流式 tool_calls 增量（arguments 拼接）。
+func mergeWorkBuddyToolCalls(existing []map[string]any, deltas []gjson.Result) []map[string]any {
+	for _, delta := range deltas {
+		index := int(delta.Get("index").Int())
+		if index < 0 {
+			continue
+		}
+		for len(existing) <= index {
+			existing = append(existing, map[string]any{"index": len(existing), "type": "function", "function": map[string]any{"name": "", "arguments": ""}})
+		}
+		entry := existing[index]
+		if id := delta.Get("id").String(); id != "" {
+			entry["id"] = id
+		}
+		if kind := delta.Get("type").String(); kind != "" {
+			entry["type"] = kind
+		}
+		fn, _ := entry["function"].(map[string]any)
+		if fn == nil {
+			fn = map[string]any{"name": "", "arguments": ""}
+			entry["function"] = fn
+		}
+		if name := delta.Get("function.name").String(); name != "" {
+			fn["name"] = name
+		}
+		if fragment := delta.Get("function.arguments").String(); fragment != "" {
+			fn["arguments"] = strings.TrimSpace(fmt.Sprint(fn["arguments"])) + fragment
+		}
+	}
+	return existing
+}
+
+// FetchWorkBuddyModelIDs 拉取账号可用模型目录。
+//
+// 上游 /console/enterprises/personal/models 的响应结构随版本变动，这里按
+// 「data/models 两种容器 + 字符串/对象两种条目」宽容解析，解析不出即返回错误，
+// 由调用方决定是否保留手工配置的模型列表。
+func FetchWorkBuddyModelIDs(ctx context.Context, account *auth.Account, proxyOverride string) ([]string, error) {
+	if account == nil {
+		return nil, errors.New("workbuddy: account is nil")
+	}
+	proxyURL := proxyOverride
+	if strings.TrimSpace(proxyURL) == "" {
+		proxyURL = account.ProxyURL
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, account.WorkBuddyBaseURL()+auth.WorkBuddyModelsPath, nil)
+	if err != nil {
+		return nil, err
+	}
+	auth.ApplyWorkBuddyCommonHeaders(req, account)
+	if token := account.WorkBuddyAccessToken(); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	if uid := account.WorkBuddyUID(); uid != "" {
+		req.Header.Set("X-User-Id", uid)
+	}
+	client, err := auth.NewWorkBuddyHTTPClient(proxyURL, 30*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("workbuddy 模型目录拉取失败: http %d: %s", resp.StatusCode, truncateBodyForLog(body))
+	}
+	models := parseWorkBuddyModelCatalog(body)
+	if len(models) == 0 {
+		return nil, fmt.Errorf("workbuddy 模型目录为空或结构无法识别")
+	}
+	return models, nil
+}
+
+// parseWorkBuddyModelCatalog 宽容解析模型目录：先看 data，再看 models / 顶层数组。
+func parseWorkBuddyModelCatalog(body []byte) []string {
+	candidates := []string{"data", "models", "data.models", "data.list", "result"}
+	for _, path := range candidates {
+		if node := gjson.GetBytes(body, path); node.Exists() {
+			if models := collectWorkBuddyModelIDs(node); len(models) > 0 {
+				return models
+			}
+		}
+	}
+	if gjson.ParseBytes(body).IsArray() {
+		return collectWorkBuddyModelIDs(gjson.ParseBytes(body))
+	}
+	return nil
+}
+
+func collectWorkBuddyModelIDs(node gjson.Result) []string {
+	seen := make(map[string]struct{})
+	result := make([]string, 0, 16)
+	appendID := func(id string) {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			return
+		}
+		key := strings.ToLower(id)
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		result = append(result, id)
+	}
+	if !node.IsArray() {
+		return result
+	}
+	for _, item := range node.Array() {
+		if item.Type == gjson.String {
+			appendID(item.String())
+			continue
+		}
+		for _, key := range []string{"id", "model", "model_id", "modelId", "name"} {
+			if value := item.Get(key); value.Exists() && value.Type == gjson.String {
+				appendID(value.String())
+				break
+			}
+		}
+	}
+	return result
+}
+
+func truncateBodyForLog(body []byte) string {
+	text := strings.TrimSpace(string(body))
+	if len(text) > 300 {
+		return text[:300] + "..."
+	}
+	return text
+}
+
+// IsWorkBuddySessionDeadError 识别 refresh token 彻底失效（需要用户重新登录）。
+func IsWorkBuddySessionDeadError(body []byte) bool {
+	lower := strings.ToLower(string(body))
+	return strings.Contains(lower, "offline user session not found") || strings.Contains(lower, "12153")
+}
+
+// ensureWorkBuddyToken 在 access token 即将过期（或缺失）时用 refresh token 换新，
+// 并把新凭据写回数据库与内存。返回是否真的发生了刷新。
+//
+// 刷新失败不返回错误给调用方：请求继续打上游，由 401 走既有冷却/换号；
+// 失败原因写日志，refresh token 失效（12153）时提示需要重新登录。
+func (h *Handler) ensureWorkBuddyToken(ctx context.Context, account *auth.Account, proxyURL string) bool {
+	if h == nil || account == nil || !account.IsWorkBuddy() {
+		return false
+	}
+	accessToken := account.WorkBuddyAccessToken()
+	expiresAt := account.WorkBuddyExpiresAt()
+	if accessToken != "" && (expiresAt.IsZero() || time.Until(expiresAt) > workBuddyTokenRefreshSkew) {
+		return false
+	}
+	if strings.TrimSpace(account.RefreshToken) == "" {
+		log.Printf("[WorkBuddy] 账号 %d 缺少 refresh token，无法刷新 access token", account.ID())
+		return false
+	}
+	token, err := auth.RefreshWorkBuddyToken(ctx, account, proxyURL)
+	if err != nil {
+		log.Printf("[WorkBuddy] 账号 %d token 刷新失败: %v", account.ID(), err)
+		return false
+	}
+	account.SetWorkBuddyToken(token.AccessToken, token.RefreshToken, token.ExpiresAt)
+	if h.db != nil {
+		updates := map[string]interface{}{
+			"api_key":                               token.AccessToken,
+			auth.WorkBuddyRefreshTokenCredentialKey: token.RefreshToken,
+			auth.WorkBuddyExpiresAtCredentialKey:    token.ExpiresAt.UTC().Format(time.RFC3339),
+		}
+		persistCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := h.db.UpdateCredentials(persistCtx, account.ID(), updates); err != nil {
+			log.Printf("[WorkBuddy] 账号 %d 刷新后落库失败: %v", account.ID(), err)
+		}
+	}
+	log.Printf("[WorkBuddy] 账号 %d access token 已刷新，有效期至 %s", account.ID(), token.ExpiresAt.Format(time.RFC3339))
+	return true
+}

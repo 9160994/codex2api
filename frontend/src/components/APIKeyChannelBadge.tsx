@@ -9,6 +9,7 @@ const CHANNEL_NAMES: Record<UpstreamChannel, string> = {
   grok: 'Grok',
   antigravity: 'Antigravity',
   claude: 'Claude',
+  workbuddy: 'WorkBuddy',
 }
 
 export default function APIKeyChannelBadge({ channel }: { channel?: UpstreamChannel }) {

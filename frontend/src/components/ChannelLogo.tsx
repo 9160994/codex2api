@@ -2,7 +2,7 @@ import { cn } from "@/lib/utils";
 import type { UpstreamChannel } from "@/types";
 
 /**
- * 渠道品牌图标（Codex / Grok / Antigravity）。
+ * 渠道品牌图标（Codex / Grok / Antigravity / Claude / WorkBuddy）。
  *
  * 使用 `@lobehub/icons-static-svg`，对齐 `@lobehub/icons` 的 Codex.Avatar 彩色方案，
  * 但不引入 antd / @lobehub/ui peer deps。
@@ -10,6 +10,8 @@ import type { UpstreamChannel } from "@/types";
  * - Codex：`codex-color.svg`（白底圆角 + 紫蓝渐变 mark，即 Codex.Avatar）
  * - Grok：仅有 mono `grok.svg`（fill=currentColor，跟随文字色适配深浅主题）
  * - Antigravity：`antigravity-color.svg`（官方彩色 mark）
+ * - WorkBuddy：lobehub 没有该品牌资源，借用同厂 `codebuddy-color.svg` 形状最接近的彩色 mark
+ *   （WorkBuddy 走 wb2api，与企业版 CodeBuddy 同一体系），不引用不存在的文件。
  */
 const ICON_URLS = import.meta.glob(
   [
@@ -18,6 +20,7 @@ const ICON_URLS = import.meta.glob(
     "../../node_modules/@lobehub/icons-static-svg/icons/antigravity-color.svg",
     "../../node_modules/@lobehub/icons-static-svg/icons/claudecode-color.svg",
     "../../node_modules/@lobehub/icons-static-svg/icons/claude-color.svg",
+    "../../node_modules/@lobehub/icons-static-svg/icons/codebuddy-color.svg",
   ],
   { eager: true, query: "?url", import: "default" },
 ) as Record<string, string>;
@@ -78,16 +81,22 @@ export default function ChannelLogo({
   className?: string;
   title?: string;
 }) {
-  if (channel === "codex" || channel === "antigravity" || channel === "claude") {
+  if (
+    channel === "codex" ||
+    channel === "antigravity" ||
+    channel === "claude" ||
+    channel === "workbuddy"
+  ) {
     const fileByChannel: Record<string, { file: string; alt: string }> = {
       codex: { file: "codex-color", alt: "Codex" },
       antigravity: { file: "antigravity-color", alt: "Antigravity" },
       claude: { file: "claude-color", alt: "Claude" },
+      workbuddy: { file: "codebuddy-color", alt: "WorkBuddy" },
     };
     const meta = fileByChannel[channel];
     const src = URL_BY_FILE.get(meta.file);
     if (!src) return null;
-    const rounded = channel === "codex";
+    const rounded = channel === "codex" || channel === "workbuddy";
     return (
       <img
         src={src}

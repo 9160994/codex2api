@@ -44,6 +44,16 @@ import type {
   GrokAccountState,
   GrokStateSyncResponse,
   GrokCapabilityProbeResponse,
+  AddWorkBuddyAccountRequest,
+  UpdateWorkBuddyAccountRequest,
+  WorkBuddyAccountsResponse,
+  WorkBuddyCreateResponse,
+  WorkBuddyDeleteResponse,
+  WorkBuddyImportRequest,
+  WorkBuddyImportResponse,
+  WorkBuddyModelsResponse,
+  WorkBuddyRefreshResponse,
+  WorkBuddyTestResponse,
   AdminErrorResponse,
   APIKeysResponse,
   APIKeyTokenStat,
@@ -743,6 +753,48 @@ export const api = {
     }),
   updateGrokAccount: (id: number, data: UpdateGrokAccountRequest) =>
     request<MessageResponse>(`/accounts/${id}/grok`, { method: 'PATCH', body: JSON.stringify(data) }),
+  // WorkBuddy 上游(wb2api):列表/新增/批量导入/删除走 /accounts/workbuddy 聚合路径,
+  // 单个账号的测试、刷新、编辑走 /accounts/{id}/workbuddy。
+  // 启停复用通用接口 toggleAccountEnabled(/accounts/{id}/enable);
+  // 模型白名单只能走 updateWorkBuddyAccount —— 通用 /accounts/{id}/models 对中转账号返回 400。
+  listWorkBuddyAccounts: (signal?: AbortSignal) =>
+    request<WorkBuddyAccountsResponse>('/accounts/workbuddy', { signal }),
+  addWorkBuddyAccount: (data: AddWorkBuddyAccountRequest) =>
+    request<WorkBuddyCreateResponse>('/accounts/workbuddy', {
+      method: 'POST',
+      body: JSON.stringify(data),
+      timeoutMs: 60_000,
+    }),
+  importWorkBuddyAccounts: (data: WorkBuddyImportRequest) =>
+    request<WorkBuddyImportResponse>('/accounts/workbuddy/import', {
+      method: 'POST',
+      body: JSON.stringify(data),
+      timeoutMs: 120_000,
+    }),
+  deleteWorkBuddyAccounts: (ids: number[]) =>
+    request<WorkBuddyDeleteResponse>('/accounts/workbuddy/delete', {
+      method: 'POST',
+      body: JSON.stringify({ ids }),
+    }),
+  updateWorkBuddyAccount: (id: number, data: UpdateWorkBuddyAccountRequest) =>
+    request<MessageResponse>(`/accounts/${id}/workbuddy`, { method: 'PATCH', body: JSON.stringify(data) }),
+  testWorkBuddyAccount: (id: number) =>
+    request<WorkBuddyTestResponse>(`/accounts/${id}/workbuddy/test`, {
+      method: 'POST',
+      timeoutMs: 45_000,
+    }),
+  refreshWorkBuddyAccount: (id: number) =>
+    request<WorkBuddyRefreshResponse>(`/accounts/${id}/workbuddy/refresh`, {
+      method: 'POST',
+      timeoutMs: 45_000,
+    }),
+  // 同步上游模型目录(可选只同步指定账号):只读探测,不落库。
+  syncWorkBuddyModels: (ids?: number[]) =>
+    request<WorkBuddyModelsResponse>('/accounts/workbuddy/models', {
+      method: 'POST',
+      body: JSON.stringify(ids && ids.length > 0 ? { ids } : {}),
+      timeoutMs: 60_000,
+    }),
   fetchAntigravityModels: (data: AddAntigravityAccountRequest) =>
     request<{ models: string[] }>('/accounts/antigravity/models', {
       method: 'POST',

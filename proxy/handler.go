@@ -518,13 +518,64 @@ func (h *Handler) applyUpstreamChannelFilterWithGate(c *gin.Context, effectiveMo
 		return combine(claudeChannelAccountFilterWithGate(effectiveModel, gate))
 	case database.UpstreamChannelCodex:
 		return func(account *auth.Account) bool {
-			if account == nil || account.IsGrokAPI() || account.IsAntigravityAPI() || account.IsClaudeOAuth() {
+			if account == nil || account.IsGrokAPI() || account.IsAntigravityAPI() || account.IsClaudeOAuth() || account.IsWorkBuddy() {
 				return false
 			}
 			return filter == nil || filter(account)
 		}
+	case database.UpstreamChannelWorkBuddy:
+		// 不复用 Codex 侧的模型能力过滤器：WorkBuddy 的模型目录由上游决定，
+		// base filter 会把未知模型当成不可调度直接排除掉。
+		return workbuddyChannelAccountFilterWithGate(effectiveModel, gate)
 	}
-	return filter
+	// 无渠道限定的 Key：WorkBuddy 账号只服务 chat 协议，不能混进 Codex 调度，
+	// 需要显式绑定 workbuddy 渠道的 Key 才会用到（本期口径）。
+	return func(account *auth.Account) bool {
+		if account == nil || account.IsWorkBuddy() {
+			return false
+		}
+		return filter == nil || filter(account)
+	}
+}
+
+// workbuddyChannelAccountFilter 是 workbuddy 渠道 Key 的账号过滤器：仅 WorkBuddy
+// 账号；账号配置了模型白名单时只调度名单内的模型，空白名单放行全部。
+func workbuddyChannelAccountFilter(model string) auth.AccountFilter {
+	return workbuddyChannelAccountFilterWithGate(model, enforceModelRateLimits)
+}
+
+func workbuddyChannelAccountFilterWithGate(model string, gate modelRateLimitGate) auth.AccountFilter {
+	model = stripWorkBuddyRealmPrefix(strings.TrimSpace(model))
+	return func(account *auth.Account) bool {
+		if account == nil || !account.IsWorkBuddy() {
+			return false
+		}
+		if gate.blocks(account, model) {
+			return false
+		}
+		models := account.WorkBuddyModels()
+		if len(models) == 0 || model == "" {
+			return true
+		}
+		for _, candidate := range models {
+			if strings.EqualFold(stripWorkBuddyRealmPrefix(strings.TrimSpace(candidate)), model) {
+				return true
+			}
+		}
+		return false
+	}
+}
+
+// stripWorkBuddyRealmPrefix 去掉下游模型名里的域前缀（cn: / global:）。
+// 客户端用带前缀的目录名，账号白名单里存的是上游裸模型名。
+func stripWorkBuddyRealmPrefix(model string) string {
+	lower := strings.ToLower(model)
+	for _, prefix := range []string{"cn:", "global:"} {
+		if strings.HasPrefix(lower, prefix) {
+			return strings.TrimSpace(model[len(prefix):])
+		}
+	}
+	return model
 }
 
 func claudeChannelAccountFilter(model string) auth.AccountFilter {
@@ -4099,6 +4150,16 @@ func outputGuardHTTPGateArmed() bool {
 
 // Responses 处理 /v1/responses 请求（原生透传，增强输入验证）
 func (h *Handler) Responses(c *gin.Context) {
+	// WorkBuddy 上游只有 OpenAI Chat Completions，没有 Responses 语义。
+	// 在入口直接拒绝，避免翻译成 chat 形态后被上游按非法 payload 拒绝。
+	if requestUpstreamChannel(c) == database.UpstreamChannelWorkBuddy {
+		c.JSON(http.StatusBadRequest, gin.H{"error": gin.H{
+			"message": "workbuddy 渠道当前只支持 /v1/chat/completions 与 /v1/models",
+			"type":    "invalid_request_error",
+			"code":    "workbuddy_chat_only",
+		}})
+		return
+	}
 	// 1. 读取请求体
 	handlerStart := time.Now()
 	rawBody, err := readRawRequestBody(c)
@@ -4196,6 +4257,10 @@ func (h *Handler) Responses(c *gin.Context) {
 	switch upstreamChannel {
 	case database.UpstreamChannelGrok:
 		// grok 渠道 Key 的模型由 Grok 上游校验，跳过网关侧模型白名单。
+	case database.UpstreamChannelWorkBuddy:
+		// workbuddy 渠道模型由 WorkBuddy 上游校验（模型目录是动态的，
+		// 网关侧没有权威清单）。协议层已在入口拒绝 Responses。
+		rules["model"] = nil
 	case database.UpstreamChannelAntigravity:
 		// Antigravity 专用 Key 公开稳定的逻辑模型，同时继续接受旧的固定
 		// effort 别名；raw backing 与 account model_mapping 不是下游模型名。
@@ -7276,8 +7341,8 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 	// Validate request
 	validator := api.NewValidator(rawBody)
 	rules := api.ChatCompletionValidationRules()
-	if requestUpstreamChannel(c) != database.UpstreamChannelGrok {
-		// grok 渠道 Key 的模型由 Grok 上游校验，跳过网关侧模型白名单
+	if channel := requestUpstreamChannel(c); channel != database.UpstreamChannelGrok && channel != database.UpstreamChannelWorkBuddy {
+		// grok / workbuddy 渠道 Key 的模型由上游校验，跳过网关侧模型白名单
 		rules["model"] = append(rules["model"], h.modelValidator(supportedModels))
 	}
 	result := validator.ValidateRequest(rules)
@@ -7466,6 +7531,30 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 			if isStream && writeCommittedChatRetryError(c, noAvailableAccountMessage(effectiveModel)) {
 				return
 			}
+			// WorkBuddy 池全部不可用时给出可执行的原因：凭据失效（上游 401）
+			// 需要人工重新登录，和「暂无可用账号」不是一回事。
+			if requestUpstreamChannel(c) == database.UpstreamChannelWorkBuddy {
+				credentialDead := false
+				total := 0
+				for _, wbAcc := range h.store.Accounts() {
+					if wbAcc == nil || !wbAcc.IsWorkBuddy() {
+						continue
+					}
+					total++
+					switch wbAcc.RuntimeStatus() {
+					case "unauthorized", "banned", "cooldown":
+						credentialDead = true
+					}
+				}
+				if total > 0 && credentialDead {
+					c.JSON(http.StatusUnauthorized, gin.H{"error": gin.H{
+						"message": "WorkBuddy 账号凭据已失效或被上游限流：请在后台 WorkBuddy 页面重新登录授权（导入新的 access/refresh token）后重试",
+						"type":    "authentication_error",
+						"code":    "workbuddy_credentials_expired",
+					}})
+					return
+				}
+			}
 			c.JSON(http.StatusServiceUnavailable, noAvailableAccountError(effectiveModel))
 			return
 		}
@@ -7574,6 +7663,11 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 				return ExecuteAntigravityResponsesRequest(upstreamCtx, account, attemptEffectiveModel, codexBody, true, proxyURL)
 			})
 		} else if isRelayAccount {
+			// WorkBuddy 的 access token 生命周期短（约 1h），到期前惰性刷新一次；
+			// 刷新失败不阻断请求，让上游 401 走既有的冷却/换号逻辑。
+			if account.IsWorkBuddy() {
+				h.ensureWorkBuddyToken(upstreamCtx, account, proxyURL)
+			}
 			upstreamBody := codexBody
 			if mappedBody, mappedModel, ok := h.applyAccountModelMappingToBodyForModels(upstreamBody, account, logModel, effectiveModel); ok {
 				upstreamBody = mappedBody
@@ -9703,6 +9797,9 @@ func (h *Handler) supportedModelIDs(ctx context.Context) []string {
 	if h != nil && h.store != nil {
 		for _, account := range h.store.Accounts() {
 			declared := account.OpenAIResponsesModels()
+			if account.IsWorkBuddy() {
+				declared = account.WorkBuddyModels()
+			}
 			if account.IsAntigravityAPI() {
 				if !account.AntigravityDispatchEnabled() {
 					continue
