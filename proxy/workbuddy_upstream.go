@@ -71,6 +71,16 @@ func ExecuteWorkBuddyChatRequest(ctx context.Context, account *auth.Account, inb
 	if err != nil {
 		return nil, err
 	}
+	// 上游 4xx/5xx 的业务体（{"code":11102,"msg":"该后端无此模型"} 这类）是唯一
+	// 可诊断的信息，必须落到日志里，否则客户端只看到笼统的 upstream_400。
+	if resp.StatusCode >= http.StatusBadRequest {
+		raw, readErr := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		_ = resp.Body.Close()
+		if readErr == nil {
+			log.Printf("[WorkBuddy] upstream %d %s body=%s", resp.StatusCode, req.URL.Path, truncateBodyForLog(raw))
+		}
+		resp.Body = io.NopCloser(bytes.NewReader(raw))
+	}
 	if clientStream {
 		return resp, nil
 	}
@@ -109,7 +119,13 @@ func downstreamDomain(account *auth.Account) string {
 	return ""
 }
 
-// prepareWorkBuddyChatBody 让上游恒走 SSE：非流式客户端由网关聚合。
+// prepareWorkBuddyChatBody 让上游恒走 SSE（非流式客户端由网关聚合），并修掉上游
+// 会直接 400 的几种 OpenAI 扩展写法：
+//   - 上游拒绝非流式：stream 强制 true
+//   - 上游只认 max_tokens，OpenAI 新别名 max_completion_tokens 会被忽略后回落默认
+//     上限，长输出被截 → 翻译成 max_tokens
+//   - 上游 tool_choice 只接受字符串，对象形态（{"type":"function",...}）会 400
+//     code=11101 → 降级成 "auto"
 func prepareWorkBuddyChatBody(inboundBody []byte) []byte {
 	body := inboundBody
 	if !gjson.GetBytes(body, "stream").Bool() {
@@ -117,6 +133,15 @@ func prepareWorkBuddyChatBody(inboundBody []byte) []byte {
 	}
 	if !gjson.GetBytes(body, "stream_options.include_usage").Bool() {
 		body, _ = sjson.SetBytes(body, "stream_options.include_usage", true)
+	}
+	if alias := gjson.GetBytes(body, "max_completion_tokens"); alias.Exists() && alias.Type == gjson.Number {
+		if !gjson.GetBytes(body, "max_tokens").Exists() && alias.Int() > 0 {
+			body, _ = sjson.SetBytes(body, "max_tokens", alias.Int())
+		}
+		body, _ = sjson.DeleteBytes(body, "max_completion_tokens")
+	}
+	if choice := gjson.GetBytes(body, "tool_choice"); choice.Exists() && choice.IsObject() {
+		body, _ = sjson.SetBytes(body, "tool_choice", "auto")
 	}
 	return body
 }
