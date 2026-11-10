@@ -1027,6 +1027,8 @@ func parseUsageChannel(c *gin.Context) string {
 		return database.UpstreamChannelAntigravity
 	case database.UpstreamChannelClaude:
 		return database.UpstreamChannelClaude
+	case database.UpstreamChannelWorkBuddy:
+		return database.UpstreamChannelWorkBuddy
 	}
 	return ""
 }
@@ -1181,6 +1183,15 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.GET("/accounts/antigravity/export", h.ExportAntigravityAccounts)
 	api.POST("/accounts/antigravity/import", h.BatchImportAntigravityAccounts)
 	api.POST("/accounts/antigravity/refresh", h.BatchRefreshAntigravityAccounts)
+	// WorkBuddy 渠道：OpenAI Chat Completions 兼容上游（腾讯 WorkBuddy / CodeBuddy 账号池）
+	api.GET("/accounts/workbuddy", h.ListWorkBuddyAccounts)
+	api.POST("/accounts/workbuddy", h.AddWorkBuddyAccount)
+	api.POST("/accounts/workbuddy/import", h.ImportWorkBuddyAccounts)
+	api.POST("/accounts/workbuddy/delete", h.DeleteWorkBuddyAccounts)
+	api.POST("/accounts/workbuddy/models", h.FetchWorkBuddyModels)
+	api.PATCH("/accounts/:id/workbuddy", h.UpdateWorkBuddyAccount)
+	api.POST("/accounts/:id/workbuddy/test", h.TestWorkBuddyAccount)
+	api.POST("/accounts/:id/workbuddy/refresh", h.RefreshWorkBuddyAccessToken)
 	// 运维止血：清除配额事实并递增 quota_epoch（Spec §8.2），与批量刷新同为账号级入口。
 	api.POST("/accounts/antigravity/quota/clear", h.ClearAntigravityQuotaHandler)
 	api.POST("/accounts/antigravity/oauth/start", h.StartAntigravityOAuth)
@@ -1584,6 +1595,7 @@ func summarizeDashboardAccounts(rows []*database.AccountRow, runtimeAccounts []*
 		database.UpstreamChannelGrok:        {},
 		database.UpstreamChannelAntigravity: {},
 		database.UpstreamChannelClaude:      {},
+		database.UpstreamChannelWorkBuddy:   {},
 	}
 	counts.total = len(rows)
 	for _, row := range rows {
@@ -1600,6 +1612,8 @@ func summarizeDashboardAccounts(rows []*database.AccountRow, runtimeAccounts []*
 			channel = database.UpstreamChannelAntigravity
 		} else if strings.EqualFold(upstreamType, auth.UpstreamClaude) {
 			channel = database.UpstreamChannelClaude
+		} else if strings.EqualFold(upstreamType, auth.UpstreamWorkBuddy) {
+			channel = database.UpstreamChannelWorkBuddy
 		}
 		usingCredits := false
 		acc := runtimeByID[row.ID]

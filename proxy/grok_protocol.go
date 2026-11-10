@@ -2185,6 +2185,14 @@ func ExecuteRelayStyleProtocolRequest(ctx context.Context, account *auth.Account
 	if account != nil && account.IsGrokAPI() {
 		return ExecuteGrokProtocolRequest(ctx, account, inbound, inboundBody, responsesBody, proxyOverride, headers)
 	}
+	// WorkBuddy 上游只有 OpenAI Chat Completions：入站不是 chat 时明确失败，
+	// 不把 Responses 形态的 payload 发到 chat 端点上去撞上游 400。
+	if account != nil && account.IsWorkBuddy() {
+		if auth.NormalizeGrokProtocol(string(inbound)) != auth.GrokProtocolChatCompletions {
+			return nil, fmt.Errorf("workbuddy 渠道当前只支持 /v1/chat/completions")
+		}
+		return ExecuteWorkBuddyChatRequest(ctx, account, inboundBody, proxyOverride, headers)
+	}
 	if len(responsesBody) == 0 {
 		responsesBody = inboundBody
 	}

@@ -2340,6 +2340,7 @@ const VISIBLE_CHANNEL_LABELS: Record<UpstreamChannel, string> = {
   claude: 'Claude',
   antigravity: 'Antigravity',
   grok: 'Grok',
+  workbuddy: 'WorkBuddy',
 }
 
 // 供应商显示选择器：一排可多选的胶囊，点一下即保存；兜底渠道锁定在选中态。

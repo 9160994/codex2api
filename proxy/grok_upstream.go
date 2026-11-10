@@ -637,6 +637,9 @@ func relayUpstreamEndpointForAccount(account *auth.Account) string {
 		baseURL, _ := account.GrokCredentials()
 		return grokResponsesEndpoint(baseURL)
 	}
+	if account.IsWorkBuddy() {
+		return account.WorkBuddyBaseURL() + auth.WorkBuddyChatPath
+	}
 	baseURL, _ := account.OpenAIResponsesCredentials()
 	return auth.OpenAIResponsesEndpoint(baseURL, "/v1/responses")
 }

@@ -1,6 +1,6 @@
 export type ToastType = 'success' | 'error' | 'warning' | 'info'
 export type ISODateString = string
-export type UpstreamChannel = 'codex' | 'grok' | 'antigravity' | 'claude'
+export type UpstreamChannel = 'codex' | 'grok' | 'antigravity' | 'claude' | 'workbuddy'
 
 export type ChannelMonitorStatus = 'unknown' | 'operational' | 'degraded' | 'failed'
 export type ChannelMonitorBillingStatus = 'unknown' | 'ok' | 'unsupported' | 'failed'
@@ -1340,6 +1340,108 @@ export interface AntigravityCreateResponse extends MessageResponse {
   synced: boolean
   warning?: string
   group_ids?: number[]
+}
+
+// ---------- WorkBuddy 上游（wb2api 账号） ----------
+// 契约：GET /api/admin/accounts/workbuddy → { accounts: [...] }；其余按 /accounts/{id}/workbuddy 子路径。
+export interface WorkBuddyAccount {
+  id: number
+  name: string
+  uid: string
+  nickname: string
+  realm: string
+  status: string
+  enabled: boolean
+  models: string[]
+  expires_at: string
+  last_error: string
+  /** 列表接口会带出绑定的代理地址，用于编辑弹窗回填。 */
+  proxy_url?: string
+}
+
+export interface WorkBuddyAccountsResponse {
+  accounts: WorkBuddyAccount[]
+}
+
+export interface AddWorkBuddyAccountRequest {
+  name?: string
+  uid: string
+  access_token: string
+  refresh_token?: string
+  expires_at?: string
+  realm?: string
+  models?: string[]
+  proxy_url?: string
+}
+
+export interface UpdateWorkBuddyAccountRequest {
+  name?: string
+  proxy_url?: string
+  access_token?: string
+  refresh_token?: string
+  expires_at?: string
+  /** 后端 PATCH 也接受 models，但前端统一走通用 /accounts/{id}/models。 */
+  models?: string[]
+}
+
+export interface WorkBuddyImportItem {
+  uid: string
+  nickname?: string
+  access_token: string
+  refresh_token?: string
+  expires_at?: string
+  realm?: string
+  enterprise_id?: string
+  models?: string[]
+}
+
+export interface WorkBuddyImportRequest {
+  items?: WorkBuddyImportItem[]
+  /** wb2api 授权文件原文（单对象 / 数组 / {accounts:[...]}），交给后端解析。 */
+  text?: string
+}
+
+export interface WorkBuddyImportResponse {
+  imported?: number
+  failed?: number
+  total?: number
+  message?: string
+  warning?: string
+  /** 逐条失败原因（后端返回 " #序号 uid: 错误"）。 */
+  errors?: string[]
+}
+
+export interface WorkBuddyCreateResponse {
+  id?: number
+  message?: string
+  warning?: string
+}
+
+export interface WorkBuddyDeleteResponse {
+  /** 实际删除成功的账号 id 列表。 */
+  deleted?: number[]
+  message?: string
+}
+
+export interface WorkBuddyTestResponse {
+  ok: boolean
+  latency_ms?: number
+  message?: string
+  models?: string[]
+  /** 实测使用的模型与上游响应预览（成功时返回）。 */
+  model?: string
+  preview?: string
+}
+
+export interface WorkBuddyRefreshResponse {
+  ok: boolean
+  expires_at?: string
+  message?: string
+}
+
+export interface WorkBuddyModelsResponse {
+  models: string[]
+  errors?: string[]
 }
 
 export interface AntigravityOAuthStartRequest {

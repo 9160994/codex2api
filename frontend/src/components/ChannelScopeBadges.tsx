@@ -12,6 +12,7 @@ const CHANNEL_NAMES: Record<UpstreamChannel, string> = {
   claude: 'Claude',
   antigravity: 'Antigravity',
   grok: 'Grok',
+  workbuddy: 'WorkBuddy',
 }
 
 export function channelScopeLabel(channels: readonly UpstreamChannel[]): string {

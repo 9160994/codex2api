@@ -36,6 +36,7 @@ import {
 import GrokAccounts from "./GrokAccounts";
 import AntigravityAccounts from "./AntigravityAccounts";
 import ClaudeAccounts from "./ClaudeAccounts";
+import WorkBuddyAccounts from "./WorkBuddyAccounts";
 import { mergeAccountLiveState, useAccountLiveState } from "../hooks/useAccountLiveState";
 import PageHeader from "../components/PageHeader";
 import {
@@ -1841,7 +1842,9 @@ export default function Accounts() {
       ? "antigravity"
       : normalizedPath.endsWith("/accounts/claude")
         ? "claude"
-        : "codex";
+        : normalizedPath.endsWith("/accounts/workbuddy")
+          ? "workbuddy"
+          : "codex";
   const { channels: visibleChannels, isChannelVisible } = useVisibleChannels();
   // 设置页隐藏了某个渠道后，直接打开它的账号路由要回落到 Codex 视图。
   useEffect(() => {
@@ -1856,7 +1859,9 @@ export default function Accounts() {
             ? "/accounts/antigravity"
             : view === "claude"
               ? "/accounts/claude"
-              : "/accounts",
+              : view === "workbuddy"
+                ? "/accounts/workbuddy"
+                : "/accounts",
       );
     },
     [navigate],
@@ -6324,7 +6329,7 @@ export default function Accounts() {
     [],
   );
 
-  // 四个账号视图共用同一切换器（独立页面通过 headerSlot 注入）。
+  // 五个账号视图共用同一切换器（独立页面通过 headerSlot 注入）。
   // 滑块动画 + 品牌 logo，与仪表盘渠道过滤器视觉一致。
   // useMemo 保持引用稳定,否则每轮渲染的新元素会击穿独立账号页的 memo 边界。
   const providerSwitcherOptions = useMemo(
@@ -6335,13 +6340,14 @@ export default function Accounts() {
           ["grok", t("accounts.providerViewGrok")],
           ["antigravity", t("accounts.providerViewAntigravity")],
           ["claude", t("accounts.providerViewClaude")],
+          ["workbuddy", t("accounts.providerViewWorkBuddy")],
         ] as const
       ).filter(([key]) => visibleChannels.includes(key)),
     [t, visibleChannels],
   );
   const providerSwitcher = useMemo(() => (
     <div
-      className="relative grid w-full max-w-[560px] items-center rounded-lg border border-border bg-muted/40 p-0.5"
+      className="relative grid w-full max-w-[720px] items-center rounded-lg border border-border bg-muted/40 p-0.5"
       style={{ gridTemplateColumns: `repeat(${providerSwitcherOptions.length}, minmax(0, 1fr))` }}
     >
       <span
@@ -6421,6 +6427,14 @@ export default function Accounts() {
     return (
       <div key="provider-claude" className="animate-channel-switch-in">
         <ClaudeAccounts headerSlot={providerSwitcher} />
+      </div>
+    );
+  }
+
+  if (providerView === "workbuddy") {
+    return (
+      <div key="provider-workbuddy" className="animate-channel-switch-in">
+        <WorkBuddyAccounts headerSlot={providerSwitcher} />
       </div>
     );
   }

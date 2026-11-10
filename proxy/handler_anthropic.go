@@ -546,6 +546,10 @@ func (h *Handler) translateAnthropicMessagesToCodexOnce(c *gin.Context, state *a
 
 // Messages 处理 /v1/messages 请求（Anthropic Messages API → Codex Responses）
 func (h *Handler) Messages(c *gin.Context) {
+	if requestUpstreamChannel(c) == database.UpstreamChannelWorkBuddy {
+		rejectAnthropicMessagesRequest(c, http.StatusBadRequest, "invalid_request_error", "workbuddy 渠道当前只支持 /v1/chat/completions 与 /v1/models")
+		return
+	}
 	// 1. 读取请求体
 	rawBody, err := readRawRequestBody(c)
 	if err != nil {

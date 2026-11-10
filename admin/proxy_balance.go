@@ -178,7 +178,7 @@ func (h *Handler) AutoBalanceProxies(c *gin.Context) {
 		return
 	}
 	channel := strings.ToLower(strings.TrimSpace(req.Channel))
-	if channel != "" && channel != database.UpstreamChannelGrok && channel != database.UpstreamChannelCodex && channel != database.UpstreamChannelAntigravity && channel != database.UpstreamChannelClaude {
+	if channel != "" && channel != database.UpstreamChannelGrok && channel != database.UpstreamChannelCodex && channel != database.UpstreamChannelAntigravity && channel != database.UpstreamChannelClaude && channel != database.UpstreamChannelWorkBuddy {
 		writeError(c, http.StatusBadRequest, "channel 仅支持 grok / codex / antigravity / claude / 空")
 		return
 	}
