@@ -143,6 +143,15 @@ func prepareWorkBuddyChatBody(inboundBody []byte) []byte {
 	if choice := gjson.GetBytes(body, "tool_choice"); choice.Exists() && choice.IsObject() {
 		body, _ = sjson.SetBytes(body, "tool_choice", "auto")
 	}
+	// 上游只认 low/medium/high；客户端的 off/none/minimal、max/xhigh 这类档位会 400。
+	if effort := gjson.GetBytes(body, "reasoning_effort"); effort.Exists() && effort.Type == gjson.String {
+		switch strings.ToLower(strings.TrimSpace(effort.String())) {
+		case "none", "off", "minimal", "disabled":
+			body, _ = sjson.SetBytes(body, "reasoning_effort", "low")
+		case "max", "maximum", "xhigh", "x-high", "ultra":
+			body, _ = sjson.SetBytes(body, "reasoning_effort", "high")
+		}
+	}
 	return body
 }
 
