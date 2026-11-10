@@ -13,7 +13,8 @@ services:
     image: codex2api-sqlite:local
     build:
       context: .
-      dockerfile: Dockerfile
+      # 默认走源码多阶段构建；APP_DOCKERFILE=Dockerfile.bin 时改为「只 COPY 二进制」的秒级构建
+      dockerfile: ${APP_DOCKERFILE:-Dockerfile}
       args:
         BUILD_VERSION: ${BUILD_VERSION:-v3.1.4-workbuddy}
     pull_policy: never

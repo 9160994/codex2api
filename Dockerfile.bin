@@ -1,0 +1,18 @@
+# syntax=docker/dockerfile:1
+# 快速更新镜像：不做编译，只把交叉编译好的静态二进制塞进 alpine。
+# 构建耗时约 5~10 秒（不含拉基础镜像）。
+#
+#   cp codex2api-workbuddy-linux-amd64 .
+#   APP_DOCKERFILE=Dockerfile.bin docker compose \
+#     -f docker-compose.sqlite.yml -f docker-compose.sqlite.build.yml up -d --build
+FROM alpine:3.19
+
+RUN apk --no-cache add ca-certificates tzdata
+
+ARG BINARY=codex2api-workbuddy-linux-amd64
+COPY ${BINARY} /usr/local/bin/codex2api
+RUN chmod +x /usr/local/bin/codex2api
+
+WORKDIR /app
+EXPOSE 8080
+ENTRYPOINT ["/usr/local/bin/codex2api"]

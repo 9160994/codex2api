@@ -42,3 +42,7 @@ docker-compose.yml
 *.so
 *.dylib
 codex2api
+
+# Local build artifacts must not enter the build context
+build/
+*.tar.gz

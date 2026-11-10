@@ -60,3 +60,7 @@ diagrams/
 
 # local e2e test scaffolding (mock upstream + scripts, not for CI)
 /local-test/
+
+# 部署产物（预编译二进制 / 打包目录）
+build/
+codex2api-workbuddy-*
