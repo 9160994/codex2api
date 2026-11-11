@@ -12,6 +12,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -82,6 +83,9 @@ func ExecuteWorkBuddyChatRequest(ctx context.Context, account *auth.Account, inb
 			log.Printf("[WorkBuddy] upstream %d %s body=%s", resp.StatusCode, req.URL.Path, truncateBodyForLog(raw))
 		}
 		resp.Body = io.NopCloser(bytes.NewReader(raw))
+	}
+	if workBuddyFrameDebugEnabled() && resp.Body != nil {
+		resp.Body = &workBuddyFrameTap{reader: resp.Body, limit: 2000}
 	}
 	if clientStream {
 		// 上游经常不发终止帧（data: [DONE]）就关流，下游中继会把「没有终止事件」
@@ -434,6 +438,48 @@ func collectWorkBuddyModelIDs(node gjson.Result) []string {
 		}
 	}
 	return result
+}
+
+// workBuddyFrameDebugEnabled 判断是否开启原始帧转储（排查上游协议差异用）。
+// 打开方式：容器环境变量 WORKBUDDY_DEBUG_FRAMES=1。
+func workBuddyFrameDebugEnabled() bool {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv("WORKBUDDY_DEBUG_FRAMES")))
+	return v == "1" || v == "true" || v == "yes"
+}
+
+// workBuddyFrameTap 抓取上游响应的前 limit 字节并打一行日志，其余数据原样透传。
+// 只在 WORKBUDDY_DEBUG_FRAMES=1 时挂载，不改变正常路径行为。
+type workBuddyFrameTap struct {
+	reader io.Reader
+	buf    []byte
+	limit  int
+	logged bool
+}
+
+func (t *workBuddyFrameTap) Read(p []byte) (int, error) {
+	n, err := t.reader.Read(p)
+	if n > 0 && !t.logged {
+		t.buf = append(t.buf, p[:n]...)
+		if len(t.buf) >= t.limit || err != nil {
+			t.flush()
+		}
+	}
+	if err != nil && !t.logged {
+		t.flush()
+	}
+	return n, err
+}
+
+func (t *workBuddyFrameTap) flush() {
+	t.logged = true
+	log.Printf("[WorkBuddy] WORKBUDDY-RAW (%d bytes) %s", len(t.buf), truncateBodyForLog(t.buf))
+}
+
+func (t *workBuddyFrameTap) Close() error {
+	if closer, ok := t.reader.(io.Closer); ok {
+		return closer.Close()
+	}
+	return nil
 }
 
 // workBuddyDoneAppendingBody 在 SSE 流 EOF 处补一个 `data: [DONE]`。
