@@ -1,17 +1,17 @@
 name: Server binary
 
-# 给自建服务器用的预编译二进制：push 到 main 后自动构建 linux/amd64 静态二进制，
-# 发布到滚动 Release `build-latest`，服务器执行 ./update.sh 即可下载并更新（约 15 秒）。
+# 给自建服务器用的预编译二进制。门禁：只有 CI（pr-check.yml）在 main 上跑绿了才发布，
+# 避免测试失败或逻辑被改坏的提交也上线。手动触发可临时绕过（紧急回滚 / CI 故障）。
 on:
-  push:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
     branches: [main]
-    paths-ignore:
-      - 'docs/**'
-      - '**.md'
   workflow_dispatch:
 
 permissions:
   contents: write
+  actions: read
 
 concurrency:
   group: server-binary
@@ -23,10 +23,26 @@ env:
 
 jobs:
   build:
+    # CI 成功且在 main 上才构建；手动触发不受限。
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == 'main')
     runs-on: ubuntu-latest
     steps:
+      - name: Resolve target commit
+        id: target
+        run: |
+          SHA="${{ github.event.workflow_run.head_sha }}"
+          [ -z "$SHA" ] && SHA="${{ github.sha }}"
+          echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          echo "short=${SHA::7}" >> "$GITHUB_OUTPUT"
+          echo "构建目标提交：$SHA"
+
       - name: Checkout
         uses: actions/checkout@v5
+        with:
+          ref: ${{ steps.target.outputs.sha }}
 
       - name: Set up Node.js
         uses: actions/setup-node@v5
@@ -49,9 +65,9 @@ jobs:
 
       - name: Build static binary
         env:
-          SHORT_SHA: ${{ github.sha }}
+          SHORT: ${{ steps.target.outputs.short }}
         run: |
-          VERSION="ci-${SHORT_SHA::7}"
+          VERSION="ci-${SHORT}"
           echo "BUILD_VERSION=$VERSION" >> "$GITHUB_ENV"
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath \
             -ldflags "-s -w -X github.com/codex2api/internal/version.Version=$VERSION" \
@@ -63,9 +79,10 @@ jobs:
       - name: Publish rolling release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TARGET_SHA: ${{ steps.target.outputs.sha }}
         run: |
           gh release view "$TAG" >/dev/null 2>&1 || \
             gh release create "$TAG" --title "Latest build" --prerelease \
-              --notes "每次 push 到 main 自动重建，供自建服务器 ./update.sh 下载。"
+              --notes "CI 通过后自动重建，供自建服务器 ./update.sh 下载。"
           gh release upload "$TAG" "$ASSET" "$ASSET.sha256" --clobber
-          gh release edit "$TAG" --notes "构建版本：$BUILD_VERSION　提交：${{ github.sha }}" >/dev/null
+          gh release edit "$TAG" --notes "构建版本：$BUILD_VERSION　提交：$TARGET_SHA（CI 通过）" >/dev/null
