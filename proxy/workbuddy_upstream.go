@@ -419,6 +419,24 @@ func IsWorkBuddySessionDeadError(body []byte) bool {
 	return strings.Contains(lower, "offline user session not found") || strings.Contains(lower, "12153")
 }
 
+// WorkBuddyUpstreamErrorMessage 从上游错误体里抠出可读原因：
+// {"code":11102,"msg":"该后端无此模型"} → `上游 11102: 该后端无此模型`。
+// 解析不出时回退到原文（截断）。
+func WorkBuddyUpstreamErrorMessage(body []byte) string {
+	code := gjson.GetBytes(body, "code").Int()
+	msg := strings.TrimSpace(firstGJSONString(body, "msg", "message", "error.message", "error"))
+	if msg != "" {
+		if code != 0 {
+			return fmt.Sprintf("上游 %d: %s", code, msg)
+		}
+		return "上游: " + msg
+	}
+	if code != 0 {
+		return fmt.Sprintf("上游返回错误码 %d", code)
+	}
+	return truncateBodyForLog(body)
+}
+
 // ensureWorkBuddyToken 在 access token 即将过期（或缺失）时用 refresh token 换新，
 // 并把新凭据写回数据库与内存。返回是否真的发生了刷新。
 //

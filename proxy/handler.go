@@ -7691,6 +7691,23 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 		}
 		durationMs := int(time.Since(start).Milliseconds())
 
+		// WorkBuddy 上游的 4xx/5xx 业务体（11102「该后端无此模型」/ 11101 参数错…）
+		// 是唯一可诊断的信息。不要把它吞成笼统的 upstream_400：读出来直接回给客户端。
+		if reqErr == nil && resp != nil && account.IsWorkBuddy() && resp.StatusCode >= http.StatusBadRequest {
+			raw, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
+			_ = resp.Body.Close()
+			message := WorkBuddyUpstreamErrorMessage(raw)
+			log.Printf("[WorkBuddy] upstream %d model=%s body=%s", resp.StatusCode, attemptEffectiveModel, truncateBodyForLog(raw))
+			ttftGuard.Stop()
+			h.store.Release(account)
+			c.JSON(resp.StatusCode, gin.H{"error": gin.H{
+				"message": message,
+				"type":    ErrorTypeUpstreamError,
+				"code":    fmt.Sprintf("upstream_%d", resp.StatusCode),
+			}})
+			return
+		}
+
 		if reqErr != nil {
 			if apiKeyModelRequestError(reqErr) != nil {
 				ttftGuard.Stop()
