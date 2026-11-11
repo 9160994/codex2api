@@ -62,24 +62,25 @@ func (h *Handler) workBuddyChatCompletions(c *gin.Context) {
 	// displayMsg 明确写着「请求被拦截，请重新发送」）是可重试的瞬时拦截，
 	// 同一账号同一模型下一次往往就过。这里内部重试，避免把偶发拦截直接甩给客户端。
 	var resp *http.Response
-	const maxAttempts = 5
+	// 同一套 system 提示词一旦被判过一次 11128，后续请求直接从 level=5（system→user）
+	// 开始，省掉 4 次必然失败的上游调用；level=5 也失败时才回到常规阶梯。
+	memoKey := workBuddySystemMemoKey(rawBody)
+	levels := []int{0, 2, 3, 4, 5}
+	if workBuddyShiftMemoHit(memoKey) {
+		levels = []int{5, 0, 3, 4}
+		log.Printf("[WorkBuddy] 命中 level=5 记忆，直接降级 system 重试")
+	}
+	maxAttempts := len(levels)
+	shiftSucceeded := false
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		// 逐级降噪：1 原样，2 去掉温度/top_p/penalties 等装饰参数，3 再去掉 thinking。
-		level := 0
-		switch attempt {
-		case 2:
-			level = 2
-		case 3:
-			level = 3
-		case 4:
-			level = 4
-		case 5:
-			level = 5
-		}
+		level := levels[attempt-1]
 		resp, err = ExecuteWorkBuddyChatRequest(ctx, account, rawBody, account.ProxyURL, c.Request.Header, level)
 		if err != nil || resp.StatusCode < http.StatusBadRequest {
 			if attempt > 1 {
 				log.Printf("[WorkBuddy] 第 %d 次尝试（level=%d）成功", attempt, level)
+			}
+			if level == 5 {
+				shiftSucceeded = true
 			}
 			break
 		}
@@ -102,6 +103,9 @@ func (h *Handler) workBuddyChatCompletions(c *gin.Context) {
 			c.JSON(http.StatusGatewayTimeout, gin.H{"error": gin.H{"message": "上游超时", "type": ErrorTypeUpstreamError}})
 			return
 		}
+	}
+	if shiftSucceeded {
+		workBuddyShiftMemoRemember(memoKey)
 	}
 	if err != nil {
 		log.Printf("[WorkBuddy] 请求失败 account=%d: %v", account.ID(), err)
