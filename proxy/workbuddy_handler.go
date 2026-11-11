@@ -55,7 +55,34 @@ func (h *Handler) workBuddyChatCompletions(c *gin.Context) {
 	defer cancel()
 
 	h.ensureWorkBuddyToken(ctx, account, account.ProxyURL)
-	resp, err := ExecuteWorkBuddyChatRequest(ctx, account, rawBody, account.ProxyURL, c.Request.Header)
+
+	// 上游风控的 11128（"Illegal API invocation from an unapproved channel"，
+	// displayMsg 明确写着「请求被拦截，请重新发送」）是可重试的瞬时拦截，
+	// 同一账号同一模型下一次往往就过。这里内部重试，避免把偶发拦截直接甩给客户端。
+	var resp *http.Response
+	const maxAttempts = 3
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		resp, err = ExecuteWorkBuddyChatRequest(ctx, account, rawBody, account.ProxyURL, c.Request.Header)
+		if err != nil || resp.StatusCode < http.StatusBadRequest {
+			break
+		}
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
+		resp.Body.Close()
+		if !workBuddyRetryableBlock(body) || attempt == maxAttempts {
+			log.Printf("[WorkBuddy] upstream %d account=%d attempt=%d body=%s", resp.StatusCode, account.ID(), attempt, truncateBodyForLog(body))
+			h.applyWorkBuddyCooldown(account, resp.StatusCode)
+			message := WorkBuddyUpstreamErrorMessage(body) + workBuddyBlockHint(body)
+			c.JSON(resp.StatusCode, gin.H{"error": gin.H{"message": message, "type": ErrorTypeUpstreamError, "code": "upstream_" + strconv.Itoa(resp.StatusCode)}})
+			return
+		}
+		log.Printf("[WorkBuddy] 上游风控拦截(11128)，%dms 后重试 (attempt %d/%d)", 300*attempt, attempt, maxAttempts)
+		select {
+		case <-time.After(time.Duration(300*attempt) * time.Millisecond):
+		case <-ctx.Done():
+			c.JSON(http.StatusGatewayTimeout, gin.H{"error": gin.H{"message": "上游超时", "type": ErrorTypeUpstreamError}})
+			return
+		}
+	}
 	if err != nil {
 		log.Printf("[WorkBuddy] 请求失败 account=%d: %v", account.ID(), err)
 		c.JSON(http.StatusBadGateway, gin.H{"error": gin.H{"message": err.Error(), "type": ErrorTypeUpstreamError, "code": "workbuddy_upstream_error"}})
@@ -65,7 +92,7 @@ func (h *Handler) workBuddyChatCompletions(c *gin.Context) {
 
 	if resp.StatusCode >= http.StatusBadRequest {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
-		message := WorkBuddyUpstreamErrorMessage(body)
+		message := WorkBuddyUpstreamErrorMessage(body) + workBuddyBlockHint(body)
 		log.Printf("[WorkBuddy] upstream %d account=%d body=%s", resp.StatusCode, account.ID(), truncateBodyForLog(body))
 		h.applyWorkBuddyCooldown(account, resp.StatusCode)
 		c.JSON(resp.StatusCode, gin.H{"error": gin.H{"message": message, "type": ErrorTypeUpstreamError, "code": "upstream_" + strconv.Itoa(resp.StatusCode)}})
@@ -188,4 +215,18 @@ func (h *Handler) logWorkBuddyUsage(c *gin.Context, account *auth.Account, model
 		ClientUserAgent:  c.Request.UserAgent(),
 		ClientIP:         c.ClientIP(),
 	})
+}
+
+// workBuddyRetryableBlock 判断上游错误是否可以立刻重试。
+// 11128 是上游风控的瞬时拦截（displayMsg: 请求被拦截，请重新发送），重发通常即可通过。
+func workBuddyRetryableBlock(body []byte) bool {
+	return gjson.GetBytes(body, "code").Int() == 11128
+}
+
+// workBuddyBlockHint 给风控类拦截补一句可执行提示，避免用户误判成账号/额度问题。
+func workBuddyBlockHint(body []byte) string {
+	if gjson.GetBytes(body, "code").Int() != 11128 {
+		return ""
+	}
+	return "（上游风控瞬时拦截：网关已自动重发 3 次仍被拦，稍后再试或降低并发即可，与账号额度无关）"
 }
