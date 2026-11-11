@@ -410,16 +410,14 @@ func aggregateWorkBuddyStream(resp *http.Response) (*http.Response, error) {
 					}
 					// 上游可能把正文放在 delta.content（字符串或分段数组）、
 					// delta.reasoning_content、或非流式帧的 message.content 里，
-					// 也可能整体包在 data 信封中；逐种取到为止。
-					for _, path := range []string{"choices.0.delta.content", "choices.0.message.content", "data.choices.0.delta.content", "data.content", "content"} {
-						if text := workBuddyTextValue(gjson.GetBytes(payload, path)); text != "" {
-							content.WriteString(text)
-						}
+					// 也可能整体包在 data 信封中。这些路径指向的是同一段正文的
+					// 不同表达，同一帧只取第一个命中的，否则信封形态会把正文
+					// 重复拼接（choices.0.* 与 data.choices.0.* 同时存在时）。
+					if text := firstWorkBuddyText(payload, "choices.0.delta.content", "choices.0.message.content", "data.choices.0.delta.content", "data.content", "content"); text != "" {
+						content.WriteString(text)
 					}
-					for _, path := range []string{"choices.0.delta.reasoning_content", "choices.0.delta.reasoning", "data.choices.0.delta.reasoning_content"} {
-						if text := workBuddyTextValue(gjson.GetBytes(payload, path)); text != "" {
-							reason.WriteString(text)
-						}
+					if text := firstWorkBuddyText(payload, "choices.0.delta.reasoning_content", "choices.0.delta.reasoning", "data.choices.0.delta.reasoning_content"); text != "" {
+						reason.WriteString(text)
 					}
 					if id == "" {
 						id = gjson.GetBytes(payload, "id").String()
@@ -814,6 +812,19 @@ func workBuddyTextValue(node gjson.Result) string {
 			}
 		}
 		return sb.String()
+	}
+	return ""
+}
+
+// firstWorkBuddyText 按顺序返回第一个非空的文本路径结果。
+//
+// 候选路径描述的是同一段正文的不同表达（裸 choices 与 data 信封包装），
+// 必须只取一个：同时拼接会让聚合后的 content 出现重复正文。
+func firstWorkBuddyText(payload []byte, paths ...string) string {
+	for _, path := range paths {
+		if text := workBuddyTextValue(gjson.GetBytes(payload, path)); text != "" {
+			return text
+		}
 	}
 	return ""
 }

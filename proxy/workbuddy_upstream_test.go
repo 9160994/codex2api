@@ -127,6 +127,78 @@ func TestExecuteWorkBuddyChatRequestRequiresAccessToken(t *testing.T) {
 	}
 }
 
+// 同一帧同时给出裸 choices 与 data 信封两种正文表达时，只能取其中一个，
+// 否则聚合后的 content 会把正文重复拼接一遍。
+func TestAggregateWorkBuddyStreamDoesNotDuplicateEnvelopeContent(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, `data: {"id":"c1","model":"deepseek-v4-flash","choices":[{"index":0,"delta":{"content":"可用","reasoning_content":"思考A"}}],"data":{"choices":[{"delta":{"content":"可用"}}],"content":"可用"}}`+"\n\n")
+		_, _ = io.WriteString(w, `data: {"id":"c1","choices":[{"index":0,"delta":{"content":"！","reasoning":"思考B"},"finish_reason":"stop"}]}`+"\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	account := newWorkBuddyTestAccount(server.URL)
+	body := []byte(`{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"hi"}],"stream":false}`)
+	resp, err := ExecuteWorkBuddyChatRequest(context.Background(), account, body, "", nil)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+
+	var payload struct {
+		Choices []struct {
+			Message struct {
+				Content          string `json:"content"`
+				ReasoningContent string `json:"reasoning_content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("aggregated body is not JSON: %v (%s)", err, raw)
+	}
+	if got := payload.Choices[0].Message.Content; got != "可用！" {
+		t.Fatalf("content duplicated across envelope paths: %q, want %q", got, "可用！")
+	}
+	if got := payload.Choices[0].Message.ReasoningContent; got != "思考A思考B" {
+		t.Fatalf("reasoning duplicated across alias paths: %q, want %q", got, "思考A思考B")
+	}
+}
+
+// 分段数组形态的 content 仍然要整段拼上，不能因为「只取第一个命中」而丢片段。
+func TestAggregateWorkBuddyStreamKeepsSegmentedContent(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, `data: {"id":"c2","choices":[{"index":0,"delta":{"content":[{"type":"text","text":"分段"},{"type":"text","text":"正文"}]}}]}`+"\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	account := newWorkBuddyTestAccount(server.URL)
+	body := []byte(`{"model":"deepseek-v4-flash","messages":[{"role":"user","content":"hi"}],"stream":false}`)
+	resp, err := ExecuteWorkBuddyChatRequest(context.Background(), account, body, "", nil)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+
+	var payload struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		t.Fatalf("aggregated body is not JSON: %v (%s)", err, raw)
+	}
+	if got := payload.Choices[0].Message.Content; got != "分段正文" {
+		t.Fatalf("segmented content lost: %q", got)
+	}
+}
+
 // 模型目录解析要兼容字符串/对象两种条目与 data/models 两种容器。
 func TestParseWorkBuddyModelCatalog(t *testing.T) {
 	cases := []string{
