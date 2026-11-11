@@ -322,7 +322,7 @@ test('account bar shows recovery progress and persisted next probe', async t => 
 test('source switches preserve legacy defaults, change independently and save without altering adaptive policy', async t => {
  const page = await fixture(t)
  const source = label => page.getByRole('switch', {name: label + ' 自动降智检测', exact: true})
- for (const [label, value] of [['GPT / Codex','true'],['Claude','true'],['Grok','false'],['Antigravity','false']]) {
+ for (const [label, value] of [['GPT / Codex','true'],['Claude','true'],['Grok','false'],['Antigravity','false'],['WorkBuddy','false']]) {
   assert.equal(await source(label).getAttribute('aria-checked'), value)
  }
  await source('Claude').click()
@@ -335,7 +335,7 @@ test('source switches preserve legacy defaults, change independently and save wi
  await page.getByRole('button',{name:'保存配置',exact:true}).click()
  await page.getByRole('button',{name:'保存配置',exact:true,disabled:true}).waitFor()
  const config = await page.evaluate(()=>window.__config)
- assert.deepEqual(config.channels, {codex:true,claude:false,grok:true,antigravity:false})
+ assert.deepEqual(config.channels, {codex:true,claude:false,grok:true,antigravity:false,workbuddy:false})
  assert.equal(config.grok_model,'grok-4.7')
  assert.equal(config.enabled,false)
  assert.equal(config.pause_initial_seconds,1800)
