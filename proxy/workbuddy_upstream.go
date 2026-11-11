@@ -243,6 +243,27 @@ func workBuddySanitizeBody(body []byte, level int) []byte {
 	for _, field := range []string{"thinking", "reasoning_effort"} {
 		body, _ = sjson.DeleteBytes(body, field)
 	}
+	if level < 4 {
+		return body
+	}
+	// level 4：只保留语义必需字段，其余全部删掉并把删掉的键名落到日志，
+	// 这样即使仍然被拦，也能从日志直接看出是哪个字段惹的祸。
+	keep := map[string]bool{
+		"model": true, "messages": true, "stream": true, "max_tokens": true,
+		"tools": true, "tool_choice": true, "stream_options": true,
+	}
+	var removed []string
+	gjson.ParseBytes(body).ForEach(func(key, _ gjson.Result) bool {
+		if !keep[key.String()] {
+			removed = append(removed, key.String())
+			body, _ = sjson.DeleteBytes(body, key.String())
+		}
+		return true
+	})
+	if len(removed) > 0 {
+		sort.Strings(removed)
+		log.Printf("[WorkBuddy] level=4 剥离字段: %s", strings.Join(removed, ","))
+	}
 	return body
 }
 

@@ -7,6 +7,8 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -60,7 +62,7 @@ func (h *Handler) workBuddyChatCompletions(c *gin.Context) {
 	// displayMsg 明确写着「请求被拦截，请重新发送」）是可重试的瞬时拦截，
 	// 同一账号同一模型下一次往往就过。这里内部重试，避免把偶发拦截直接甩给客户端。
 	var resp *http.Response
-	const maxAttempts = 3
+	const maxAttempts = 4
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		// 逐级降噪：1 原样，2 去掉温度/top_p/penalties 等装饰参数，3 再去掉 thinking。
 		level := 0
@@ -69,6 +71,8 @@ func (h *Handler) workBuddyChatCompletions(c *gin.Context) {
 			level = 2
 		case 3:
 			level = 3
+		case 4:
+			level = 4
 		}
 		resp, err = ExecuteWorkBuddyChatRequest(ctx, account, rawBody, account.ProxyURL, c.Request.Header, level)
 		if err != nil || resp.StatusCode < http.StatusBadRequest {
@@ -82,6 +86,9 @@ func (h *Handler) workBuddyChatCompletions(c *gin.Context) {
 		if !workBuddyRetryableBlock(body) || attempt == maxAttempts {
 			log.Printf("[WorkBuddy] upstream %d account=%d attempt=%d body=%s", resp.StatusCode, account.ID(), attempt, truncateBodyForLog(body))
 			h.applyWorkBuddyCooldown(account, resp.StatusCode)
+			if gjson.GetBytes(body, "code").Int() == 11128 {
+				dumpWorkBuddyFailingBody(rawBody)
+			}
 			message := WorkBuddyUpstreamErrorMessage(body) + workBuddyBlockHint(body)
 			c.JSON(resp.StatusCode, gin.H{"error": gin.H{"message": message, "type": ErrorTypeUpstreamError, "code": "upstream_" + strconv.Itoa(resp.StatusCode)}})
 			return
@@ -240,4 +247,27 @@ func workBuddyBlockHint(body []byte) string {
 		return ""
 	}
 	return "（上游风控瞬时拦截：网关已自动重发 3 次仍被拦，稍后再试或降低并发即可，与账号额度无关）"
+}
+
+// dumpWorkBuddyFailingBody 把被判 11128 的入站请求体落盘，便于离线比对字段。
+// 只在最终失败时写，目录默认 /data/workbuddy-dumps（容器内可写卷），可用
+// WORKBUDDY_DUMP_DIR 覆盖；关闭用 WORKBUDDY_DUMP_DIR=off。
+func dumpWorkBuddyFailingBody(body []byte) {
+	dir := strings.TrimSpace(os.Getenv("WORKBUDDY_DUMP_DIR"))
+	if dir == "" {
+		dir = "/data/workbuddy-dumps"
+	}
+	if strings.EqualFold(dir, "off") {
+		return
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		log.Printf("[WorkBuddy] 创建转储目录失败: %v", err)
+		return
+	}
+	name := filepath.Join(dir, "11128-"+time.Now().Format("20060102-150405.000")+".json")
+	if err := os.WriteFile(name, body, 0o600); err != nil {
+		log.Printf("[WorkBuddy] 转储请求体失败: %v", err)
+		return
+	}
+	log.Printf("[WorkBuddy] 11128 请求体已转储: %s (%d bytes)", name, len(body))
 }
