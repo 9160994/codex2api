@@ -43,7 +43,7 @@ func (h *Handler) workBuddyChatCompletions(c *gin.Context) {
 	}
 	isStream := gjson.GetBytes(rawBody, "stream").Bool()
 
-	account := h.nextWorkBuddyAccount(model)
+	account, acquired := h.nextWorkBuddyAccount(c, model)
 	if account == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": gin.H{
 			"message": "WorkBuddy 渠道暂无可用账号（全部冷却/未配置该模型），请检查账号状态或重新授权",
@@ -56,6 +56,9 @@ func (h *Handler) workBuddyChatCompletions(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Minute)
 	defer cancel()
 
+	if acquired {
+		defer h.store.Release(account)
+	}
 	h.ensureWorkBuddyToken(ctx, account, account.ProxyURL)
 
 	// 上游风控的 11128（"Illegal API invocation from an unapproved channel"，
@@ -169,12 +172,23 @@ func (h *Handler) workBuddyChatCompletions(c *gin.Context) {
 	log.Printf("[WorkBuddy] 流式完成 account=%d model=%s %dms", account.ID(), model, time.Since(started).Milliseconds())
 }
 
-// nextWorkBuddyAccount 选一个能服务该模型的 WorkBuddy 账号：
-// 未冷却、凭据可用、模型在白名单内（白名单为空表示全部放行）。
-func (h *Handler) nextWorkBuddyAccount(model string) *auth.Account {
+// nextWorkBuddyAccount 通过 Store 调度器挑账号（健康层级 + 调度分 + 抖动 +
+// 并发容量），与 Codex/Grok 渠道走同一套选号逻辑；返回值第二个表示是否已占用
+// 并发槽位（占用后必须 Release）。
+//
+// 早期版本在这里手工遍历 h.store.Accounts() 并返回第一个可用账号，结果所有请求
+// 都压在同一个账号上，第二个账号的额度完全用不到。
+func (h *Handler) nextWorkBuddyAccount(c *gin.Context, model string) (*auth.Account, bool) {
 	if h == nil || h.store == nil {
-		return nil
+		return nil, false
 	}
+	apiKeyID := requestAPIKeyID(c)
+	filter := workbuddyChannelAccountFilter(model)
+	if account := h.store.NextExcludingWithDispatch(apiKeyID, nil, filter, auth.DispatchPolicyStandard); account != nil {
+		return account, true
+	}
+	// 调度器没给出候选（例如索引模式下的边界情况）时退回线性扫描，
+	// 但只选真正能服务该模型的账号，不占用并发槽位。
 	now := time.Now()
 	for _, account := range h.store.Accounts() {
 		if account == nil || !account.IsWorkBuddy() {
@@ -190,12 +204,9 @@ func (h *Handler) nextWorkBuddyAccount(model string) *auth.Account {
 		if !account.SupportsWorkBuddyModel(model) {
 			continue
 		}
-		if account.WorkBuddyAccessToken() == "" && strings.TrimSpace(account.RefreshToken) == "" {
-			continue
-		}
-		return account
+		return account, false
 	}
-	return nil
+	return nil, false
 }
 
 // applyWorkBuddyCooldown 上游错误 → 账号冷却（只处理明确的账号级状态）。
