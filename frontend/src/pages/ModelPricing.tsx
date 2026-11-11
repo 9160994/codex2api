@@ -71,7 +71,7 @@ const CHANNEL_LABEL: Record<Exclude<ChannelFilter, 'all'>, string> = {
 }
 function rowChannel(r: Row): Exclude<ChannelFilter, 'all'> {
   const c = (r.channel || '').toLowerCase()
-  if (c === 'grok' || c === 'antigravity' || c === 'claude') return c
+  if (c === 'grok' || c === 'antigravity' || c === 'claude' || c === 'workbuddy') return c
   return 'codex'
 }
 // 已见过的模型集(localStorage):用于给新出现的模型打"新"标。首次加载会播种、不标新。
