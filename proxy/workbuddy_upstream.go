@@ -184,6 +184,7 @@ func prepareWorkBuddyChatBody(inboundBody []byte) []byte {
 		body, _ = sjson.SetBytes(body, "tool_choice", "auto")
 	}
 	// 上游只认 low/medium/high；客户端的 off/none/minimal、max/xhigh 这类档位会 400。
+	body = applyWorkBuddyDeepSeekThinking(body)
 	if effort := gjson.GetBytes(body, "reasoning_effort"); effort.Exists() && effort.Type == gjson.String {
 		switch strings.ToLower(strings.TrimSpace(effort.String())) {
 		case "none", "off", "minimal", "disabled":
@@ -564,6 +565,41 @@ func (r *workBuddyDoneReader) Close() error {
 		return closer.Close()
 	}
 	return nil
+}
+
+// applyWorkBuddyDeepSeekThinking 对齐官方客户端对 deepseek 系模型的出站要求：
+// 必须显式 thinking:{type:"enabled"} + 一个 reasoning_effort 档位，否则上游按
+// 「不思考」应答（实测表现为 delta 全空、无正文）。同时给 assistant 消息补
+// reasoning_content 字段（官方 requiresReasoningContentOnAssistantMessages）。
+func applyWorkBuddyDeepSeekThinking(body []byte) []byte {
+	model := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "model").String()))
+	if !strings.HasPrefix(model, "deepseek") {
+		return body
+	}
+	thinkingType := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "thinking.type").String()))
+	if thinkingType == "" {
+		body, _ = sjson.SetBytes(body, "thinking", map[string]any{"type": "enabled"})
+		thinkingType = "enabled"
+	}
+	if thinkingType != "enabled" {
+		return body
+	}
+	if !gjson.GetBytes(body, "reasoning_effort").Exists() {
+		body, _ = sjson.SetBytes(body, "reasoning_effort", "high")
+	}
+	msgs := gjson.GetBytes(body, "messages")
+	if !msgs.IsArray() {
+		return body
+	}
+	for i, msg := range msgs.Array() {
+		if !strings.EqualFold(strings.TrimSpace(msg.Get("role").String()), "assistant") {
+			continue
+		}
+		if msg.Get("reasoning_content").Type != gjson.String {
+			body, _ = sjson.SetBytes(body, fmt.Sprintf("messages.%d.reasoning_content", i), "")
+		}
+	}
+	return body
 }
 
 // workBuddyTextValue 从 gjson 节点取纯文本：字符串直接返回；分段数组
