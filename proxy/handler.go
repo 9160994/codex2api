@@ -7307,6 +7307,12 @@ func (h *Handler) ResponsesCompact(c *gin.Context) {
 
 // ChatCompletions 处理 OpenAI Chat Completions 请求，并在流式响应中发送协议保活。
 func (h *Handler) ChatCompletions(c *gin.Context) {
+	// workbuddy 渠道走 chat→chat 直通：通用主链的响应侧是「Codex Responses → Chat」
+	// 翻译器，会把上游的 chat.completion.chunk 全部丢掉（表现为空正文/流断）。
+	if requestUpstreamChannel(c) == database.UpstreamChannelWorkBuddy {
+		h.workBuddyChatCompletions(c)
+		return
+	}
 	// 1. 读取请求体
 	rawBody, err := readRawRequestBody(c)
 	if err != nil {
@@ -7663,6 +7669,7 @@ func (h *Handler) ChatCompletions(c *gin.Context) {
 				return ExecuteAntigravityResponsesRequest(upstreamCtx, account, attemptEffectiveModel, codexBody, true, proxyURL)
 			})
 		} else if isRelayAccount {
+			log.Printf("[WorkBuddy] dispatch relay account=%d workbuddy=%v", account.ID(), account.IsWorkBuddy())
 			// WorkBuddy 的 access token 生命周期短（约 1h），到期前惰性刷新一次；
 			// 刷新失败不阻断请求，让上游 401 走既有的冷却/换号逻辑。
 			if account.IsWorkBuddy() {

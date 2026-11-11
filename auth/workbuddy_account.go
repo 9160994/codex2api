@@ -185,6 +185,61 @@ func (a *Account) SetWorkBuddyModels(models []string) {
 	a.Models = cloneStringSlice(models)
 }
 
+// WorkBuddyCooldownUntil 返回当前冷却到期时刻（不在冷却中返回零值）。
+func (a *Account) WorkBuddyCooldownUntil() time.Time {
+	if a == nil {
+		return time.Time{}
+	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if a.Status == StatusCooldown {
+		return a.CooldownUtil
+	}
+	return time.Time{}
+}
+
+// MarkWorkBuddyCooldown 把账号置为冷却状态（上游 401/429 时使用）。
+func (a *Account) MarkWorkBuddyCooldown(until time.Time, reason string) {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.Status = StatusCooldown
+	a.CooldownUtil = until
+	a.CooldownReason = reason
+}
+
+// SupportsWorkBuddyModel 判断账号白名单是否覆盖该模型；空白名单表示全部放行。
+func (a *Account) SupportsWorkBuddyModel(model string) bool {
+	if a == nil {
+		return false
+	}
+	model = StripWorkBuddyRealmPrefix(strings.TrimSpace(model))
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if len(a.Models) == 0 || model == "" {
+		return true
+	}
+	for _, candidate := range a.Models {
+		if strings.EqualFold(StripWorkBuddyRealmPrefix(strings.TrimSpace(candidate)), model) {
+			return true
+		}
+	}
+	return false
+}
+
+// StripWorkBuddyRealmPrefix 去掉下游模型名里的域前缀（cn: / global:）。
+func StripWorkBuddyRealmPrefix(model string) string {
+	lower := strings.ToLower(model)
+	for _, prefix := range []string{"cn:", "global:"} {
+		if strings.HasPrefix(lower, prefix) {
+			return strings.TrimSpace(model[len(prefix):])
+		}
+	}
+	return model
+}
+
 // WorkBuddyStableID 按 uid 派生稳定的设备标识（X-Machine-ID / X-Session-ID）。
 // 与 wb2api 口径一致：同一账号跨重启固定、账号之间互异，避免多号被上游按
 // 「设备指纹漂移」关联风控。

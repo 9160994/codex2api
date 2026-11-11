@@ -522,50 +522,58 @@ func workBuddyHead(b []byte, n int) []byte {
 	return b
 }
 
-// workBuddyDoneAppendingBody 在 SSE 流 EOF 处补一个 `data: [DONE]`。
-// 上游时不时漏发终止事件，缺了它下游一律按「流提前结束」报错。
-type workBuddyDoneAppendingBody struct {
-	reader   io.Reader
-	pending  []byte
-	eof      bool
-	appended bool
+// workBuddyDoneReader 在 EOF 处补一条 `data: [DONE]`（上游偶尔不发终止帧），
+// 但如果上游自己已经发过 [DONE] 就不再补，避免出现两条终止帧。
+type workBuddyDoneReader struct {
+	reader io.Reader
+	tail   [64]byte
+	tailN  int
+	eof    bool
+	done   bool
 }
 
 func newWorkBuddyDoneAppendingBody(reader io.Reader) io.ReadCloser {
 	return &workBuddyDoneReader{reader: reader}
 }
 
-type workBuddyDoneReader struct {
-	reader   io.Reader
-	pending  []byte
-	eof      bool
-	appended bool
-}
-
 func (r *workBuddyDoneReader) Read(p []byte) (int, error) {
-	if len(r.pending) > 0 {
-		n := copy(p, r.pending)
-		r.pending = r.pending[n:]
-		return n, nil
-	}
 	if r.eof {
 		return 0, io.EOF
 	}
 	n, err := r.reader.Read(p)
 	if n > 0 {
+		r.rememberDone(p[:n])
 		return n, nil
 	}
-	if err == io.EOF && !r.appended {
-		r.appended = true
+	if err == io.EOF {
 		r.eof = true
-		r.pending = []byte("\n\ndata: [DONE]\n\n")
-		if len(r.pending) > 0 {
-			m := copy(p, r.pending)
-			r.pending = r.pending[m:]
-			return m, nil
+		if r.done {
+			return 0, io.EOF
 		}
+		return copy(p, []byte("\n\ndata: [DONE]\n\n")), nil
 	}
 	return n, err
+}
+
+func (r *workBuddyDoneReader) rememberDone(chunk []byte) {
+	if r.done {
+		return
+	}
+	if len(chunk) >= len(r.tail) {
+		copy(r.tail[:], chunk[len(chunk)-len(r.tail):])
+		r.tailN = len(r.tail)
+	} else {
+		keep := r.tailN + len(chunk) - len(r.tail)
+		if keep > 0 {
+			copy(r.tail[:], r.tail[keep:r.tailN])
+			r.tailN -= keep
+		}
+		copy(r.tail[r.tailN:], chunk)
+		r.tailN += len(chunk)
+	}
+	if bytes.Contains(r.tail[:r.tailN], []byte("[DONE]")) {
+		r.done = true
+	}
 }
 
 func (r *workBuddyDoneReader) Close() error {
