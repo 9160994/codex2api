@@ -62,8 +62,19 @@ func (h *Handler) workBuddyChatCompletions(c *gin.Context) {
 	var resp *http.Response
 	const maxAttempts = 3
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		resp, err = ExecuteWorkBuddyChatRequest(ctx, account, rawBody, account.ProxyURL, c.Request.Header)
+		// 逐级降噪：1 原样，2 去掉温度/top_p/penalties 等装饰参数，3 再去掉 thinking。
+		level := 0
+		switch attempt {
+		case 2:
+			level = 2
+		case 3:
+			level = 3
+		}
+		resp, err = ExecuteWorkBuddyChatRequest(ctx, account, rawBody, account.ProxyURL, c.Request.Header, level)
 		if err != nil || resp.StatusCode < http.StatusBadRequest {
+			if attempt > 1 {
+				log.Printf("[WorkBuddy] 第 %d 次尝试（level=%d）成功", attempt, level)
+			}
 			break
 		}
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
@@ -75,7 +86,7 @@ func (h *Handler) workBuddyChatCompletions(c *gin.Context) {
 			c.JSON(resp.StatusCode, gin.H{"error": gin.H{"message": message, "type": ErrorTypeUpstreamError, "code": "upstream_" + strconv.Itoa(resp.StatusCode)}})
 			return
 		}
-		log.Printf("[WorkBuddy] 上游风控拦截(11128)，%dms 后重试 (attempt %d/%d)", 300*attempt, attempt, maxAttempts)
+		log.Printf("[WorkBuddy] 上游风控拦截(11128)，%dms 后降噪重试 (attempt %d/%d)", 300*attempt, attempt, maxAttempts)
 		select {
 		case <-time.After(time.Duration(300*attempt) * time.Millisecond):
 		case <-ctx.Done():

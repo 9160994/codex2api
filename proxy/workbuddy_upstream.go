@@ -47,7 +47,7 @@ const (
 //
 // 客户端请求流式时原样透传 SSE；请求非流式时强制上游流式，并在网关侧聚合为
 // 单个 chat.completion（上游不保证支持非流式，聚合口径与 wb2api 一致）。
-func ExecuteWorkBuddyChatRequest(ctx context.Context, account *auth.Account, inboundBody []byte, proxyOverride string, headers http.Header) (*http.Response, error) {
+func ExecuteWorkBuddyChatRequest(ctx context.Context, account *auth.Account, inboundBody []byte, proxyOverride string, headers http.Header, levels ...int) (*http.Response, error) {
 	if account == nil {
 		return nil, errors.New("workbuddy: account is nil")
 	}
@@ -56,7 +56,12 @@ func ExecuteWorkBuddyChatRequest(ctx context.Context, account *auth.Account, inb
 	}
 	clientStream := gjson.GetBytes(inboundBody, "stream").Bool()
 	log.Printf("[WorkBuddy] EXEC account=%d base=%s model=%s stream=%v", account.ID(), account.WorkBuddyBaseURL(), gjson.GetBytes(inboundBody, "model").String(), clientStream)
+	level := 0
+	if len(levels) > 0 {
+		level = levels[0]
+	}
 	body := prepareWorkBuddyChatBody(inboundBody)
+	body = workBuddySanitizeBody(body, level)
 
 	proxyURL := proxyOverride
 	if strings.TrimSpace(proxyURL) == "" {
@@ -98,7 +103,7 @@ func ExecuteWorkBuddyChatRequest(ctx context.Context, account *auth.Account, inb
 		raw, readErr := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		_ = resp.Body.Close()
 		if readErr == nil {
-			log.Printf("[WorkBuddy] upstream %d %s body=%s", resp.StatusCode, req.URL.Path, truncateBodyForLog(raw))
+			log.Printf("[WorkBuddy] upstream %d %s level=%d req=%s body=%s", resp.StatusCode, req.URL.Path, level, truncateBodyForLog(workBuddyHead(body, 1200)), truncateBodyForLog(raw))
 		}
 		resp.Body = io.NopCloser(bytes.NewReader(raw))
 	}
@@ -192,6 +197,32 @@ func prepareWorkBuddyChatBody(inboundBody []byte) []byte {
 		case "max", "maximum", "xhigh", "x-high", "ultra":
 			body, _ = sjson.SetBytes(body, "reasoning_effort", "high")
 		}
+	}
+	return body
+}
+
+// workBuddySanitizeBody 按级别剥离客户端带来的「非必要字段」。
+//
+// 背景：部分客户端会带上 temperature/top_p/penalties/response_format 之类的
+// 装饰性参数，上游风控会直接回 11128（Illegal API invocation from an unapproved
+// channel）。level 2 去掉这些装饰字段，level 3 再去掉 thinking/reasoning_effort
+// （保留 tools——工具调用是语义的一部分，不能为了绕过风控而丢掉）。
+func workBuddySanitizeBody(body []byte, level int) []byte {
+	if level < 2 {
+		return body
+	}
+	for _, field := range []string{
+		"temperature", "top_p", "top_k", "presence_penalty", "frequency_penalty",
+		"logprobs", "top_logprobs", "seed", "stop", "user", "metadata",
+		"response_format", "parallel_tool_calls", "logit_bias",
+	} {
+		body, _ = sjson.DeleteBytes(body, field)
+	}
+	if level < 3 {
+		return body
+	}
+	for _, field := range []string{"thinking", "reasoning_effort"} {
+		body, _ = sjson.DeleteBytes(body, field)
 	}
 	return body
 }
