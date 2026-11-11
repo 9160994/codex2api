@@ -9,8 +9,10 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -172,26 +174,33 @@ func (h *Handler) workBuddyChatCompletions(c *gin.Context) {
 	log.Printf("[WorkBuddy] 流式完成 account=%d model=%s %dms", account.ID(), model, time.Since(started).Milliseconds())
 }
 
-// nextWorkBuddyAccount 通过 Store 调度器挑账号（健康层级 + 调度分 + 抖动 +
-// 并发容量），与 Codex/Grok 渠道走同一套选号逻辑；返回值第二个表示是否已占用
-// 并发槽位（占用后必须 Release）。
-//
-// 早期版本在这里手工遍历 h.store.Accounts() 并返回第一个可用账号，结果所有请求
-// 都压在同一个账号上，第二个账号的额度完全用不到。
+// workBuddyRotation 记录每个账号上次被选中的时间，用来在 WorkBuddy 渠道内做
+// 轮转：这个上游的额度是按账号分的，Store 调度器只按健康度/分数挑「最优」账号，
+// 两个健康账号时会把所有请求压在同一台上，另一台的额度永远用不到。
+var workBuddyRotation struct {
+	sync.Mutex
+	lastUsed map[int64]time.Time
+}
+
+// nextWorkBuddyAccount 在能服务该模型的账号里选「最久没被用过」的那个，再用
+// Store 的 TakePreferredAccountWithDispatch 按 id 取号（保留并发计数、冷却、
+// 密钥作用域等既有校验）。全部不可用时退回调度器兜底。
+// 第二个返回值表示是否占用了并发槽位（占用后必须 Release）。
 func (h *Handler) nextWorkBuddyAccount(c *gin.Context, model string) (*auth.Account, bool) {
 	if h == nil || h.store == nil {
 		return nil, false
 	}
 	apiKeyID := requestAPIKeyID(c)
 	filter := workbuddyChannelAccountFilter(model)
-	if account := h.store.NextExcludingWithDispatch(apiKeyID, nil, filter, auth.DispatchPolicyStandard); account != nil {
-		return account, true
-	}
-	// 调度器没给出候选（例如索引模式下的边界情况）时退回线性扫描，
-	// 但只选真正能服务该模型的账号，不占用并发槽位。
 	now := time.Now()
+
+	candidates := make([]*auth.Account, 0, 4)
+	workBuddyRotation.Lock()
+	if workBuddyRotation.lastUsed == nil {
+		workBuddyRotation.lastUsed = make(map[int64]time.Time)
+	}
 	for _, account := range h.store.Accounts() {
-		if account == nil || !account.IsWorkBuddy() {
+		if account == nil || !filter(account) {
 			continue
 		}
 		switch account.RuntimeStatus() {
@@ -201,10 +210,34 @@ func (h *Handler) nextWorkBuddyAccount(c *gin.Context, model string) (*auth.Acco
 		if until := account.WorkBuddyCooldownUntil(); !until.IsZero() && now.Before(until) {
 			continue
 		}
-		if !account.SupportsWorkBuddyModel(model) {
+		candidates = append(candidates, account)
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		li, lj := workBuddyRotation.lastUsed[candidates[i].ID()], workBuddyRotation.lastUsed[candidates[j].ID()]
+		if li.Equal(lj) {
+			return candidates[i].ID() < candidates[j].ID()
+		}
+		return li.Before(lj)
+	})
+	workBuddyRotation.Unlock()
+
+	for _, candidate := range candidates {
+		account := h.store.TakePreferredAccountWithDispatch(candidate.ID(), apiKeyID, nil, filter, auth.DispatchPolicyStandard)
+		if account == nil {
 			continue
 		}
-		return account, false
+		workBuddyRotation.Lock()
+		workBuddyRotation.lastUsed[account.ID()] = time.Now()
+		workBuddyRotation.Unlock()
+		return account, true
+	}
+
+	// 轮转范围内没有可用（例如并发打满）时交给调度器兜底。
+	if account := h.store.NextExcludingWithDispatch(apiKeyID, nil, filter, auth.DispatchPolicyStandard); account != nil {
+		workBuddyRotation.Lock()
+		workBuddyRotation.lastUsed[account.ID()] = time.Now()
+		workBuddyRotation.Unlock()
+		return account, true
 	}
 	return nil, false
 }
