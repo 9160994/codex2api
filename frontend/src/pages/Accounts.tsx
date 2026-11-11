@@ -515,6 +515,9 @@ function persistAccountVisibleColumns(
 }
 
 const ACCOUNT_VIEW_MODE_KEY = "codex2api:accounts:view-mode";
+// 记住上次停留的上游视图；第一次进入 /accounts 时默认落到 WorkBuddy。
+const ACCOUNT_PROVIDER_KEY = "codex2api:accounts:provider";
+const DEFAULT_ACCOUNT_PROVIDER: UpstreamChannel = "workbuddy";
 type AccountViewMode = "table" | "grid";
 type AccountCardVariant = "mobile" | "grid" | "personal";
 type EmailDomainStat = {
@@ -1846,12 +1849,33 @@ export default function Accounts() {
           ? "workbuddy"
           : "codex";
   const { channels: visibleChannels, isChannelVisible } = useVisibleChannels();
+  // 打开 /accounts（未指定渠道）时落到上次使用的上游视图，默认 WorkBuddy。
+  useEffect(() => {
+    if (normalizedPath !== "/accounts") return;
+    let target = DEFAULT_ACCOUNT_PROVIDER;
+    try {
+      const saved = window.localStorage.getItem(ACCOUNT_PROVIDER_KEY);
+      if (saved === "codex" || saved === "grok" || saved === "antigravity" || saved === "claude" || saved === "workbuddy") {
+        target = saved;
+      }
+    } catch {
+      // ignore
+    }
+    if (target !== "codex" && isChannelVisible(target)) {
+      navigate(`/accounts/${target}`, { replace: true });
+    }
+  }, [normalizedPath, isChannelVisible, navigate]);
   // 设置页隐藏了某个渠道后，直接打开它的账号路由要回落到 Codex 视图。
   useEffect(() => {
     if (!isChannelVisible(providerView)) navigate("/accounts", { replace: true });
   }, [isChannelVisible, navigate, providerView]);
   const setProviderView = useCallback(
     (view: UpstreamChannel) => {
+      try {
+        window.localStorage.setItem(ACCOUNT_PROVIDER_KEY, view)
+      } catch {
+        // ignore
+      }
       navigate(
         view === "grok"
           ? "/accounts/grok"

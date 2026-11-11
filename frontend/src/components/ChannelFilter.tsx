@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import ChannelLogo from "./ChannelLogo";
 import { cn } from "@/lib/utils";
@@ -9,17 +9,34 @@ import { useVisibleChannels } from "../visibleChannels";
 export type UsageChannel = "" | "codex" | "grok" | "antigravity" | "claude" | "workbuddy";
 
 const USAGE_CHANNEL_KEY = "codex2api:usage:channel";
+// 老版本在挂载时会把「全部」写成 ""，无法区分"用户主动选了全部"。这个标记
+// 记录用户是否真正点过筛选条，用来做一次性迁移：没点过的旧值 "" 视为未选择。
+const USAGE_CHANNEL_MARK_KEY = "codex2api:usage:channel:user-set";
+// 未保存过选择时默认落在 WorkBuddy：本部署以 WorkBuddy 为主渠道。
+// 若该渠道在「供应商显示」里被隐藏，组件会把选择回落为「全部」。
+export const DEFAULT_USAGE_CHANNEL: UsageChannel = "workbuddy";
 
 export function useUsageChannel(): [UsageChannel, (next: UsageChannel) => void] {
-  const [channel, setChannel] = useState<UsageChannel>(() => {
+  const [channel, setChannelState] = useState<UsageChannel>(() => {
     try {
       const raw = window.localStorage.getItem(USAGE_CHANNEL_KEY);
       if (raw === "codex" || raw === "grok" || raw === "antigravity" || raw === "claude" || raw === "workbuddy") return raw;
+      const marked = window.localStorage.getItem(USAGE_CHANNEL_MARK_KEY) === "1";
+      // 用户主动选过「全部」才保留 ""，否则按默认渠道起步。
+      if (raw === "" && marked) return "";
     } catch {
       // ignore
     }
-    return "";
+    return DEFAULT_USAGE_CHANNEL;
   });
+  const setChannel = useCallback((next: UsageChannel) => {
+    try {
+      window.localStorage.setItem(USAGE_CHANNEL_MARK_KEY, "1");
+    } catch {
+      // ignore
+    }
+    setChannelState(next);
+  }, []);
   useEffect(() => {
     try {
       window.localStorage.setItem(USAGE_CHANNEL_KEY, channel);
