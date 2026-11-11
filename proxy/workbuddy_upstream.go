@@ -454,6 +454,12 @@ func WorkBuddyUpstreamErrorMessage(body []byte) string {
 		}
 		return "上游: " + msg
 	}
+	if code == 11128 {
+		// 上游把「模型不属于该账号/该通道」也归到 11128（unapproved channel），
+		// 客户端只看到「请求被拦截」会误判成账号问题，这里补一句可执行的提示。
+		return "上游 11128: Illegal API invocation from an unapproved channel（请求被拦截）——" +
+			"最常见原因是模型名不在该账号目录内，请改用 /v1/models 返回的模型（如 deepseek-v4-pro）"
+	}
 	if code != 0 {
 		return fmt.Sprintf("上游返回错误码 %d", code)
 	}
