@@ -183,14 +183,16 @@ func aggregateWorkBuddyStream(resp *http.Response) (*http.Response, error) {
 	defer resp.Body.Close()
 
 	var (
-		id      string
-		model   string
-		created int64
-		content strings.Builder
-		reason  strings.Builder
-		tools   []map[string]any
-		usage   json.RawMessage
-		finish  string
+		id         string
+		model      string
+		created    int64
+		content    strings.Builder
+		reason     strings.Builder
+		tools      []map[string]any
+		usage      json.RawMessage
+		finish     string
+		firstFrame []byte
+		frameCount int
 	)
 	reader := bufio.NewReaderSize(io.LimitReader(resp.Body, workBuddyAggregateLimit), 32*1024)
 	for {
@@ -200,6 +202,23 @@ func aggregateWorkBuddyStream(resp *http.Response) (*http.Response, error) {
 			if bytes.HasPrefix(trimmed, []byte("data:")) {
 				payload := bytes.TrimSpace(bytes.TrimPrefix(trimmed, []byte("data:")))
 				if !bytes.Equal(payload, []byte("[DONE]")) && len(payload) > 0 && json.Valid(payload) {
+					frameCount++
+					if firstFrame == nil {
+						firstFrame = append([]byte(nil), payload...)
+					}
+					// 上游可能把正文放在 delta.content（字符串或分段数组）、
+					// delta.reasoning_content、或非流式帧的 message.content 里，
+					// 也可能整体包在 data 信封中；逐种取到为止。
+					for _, path := range []string{"choices.0.delta.content", "choices.0.message.content", "data.choices.0.delta.content", "data.content", "content"} {
+						if text := workBuddyTextValue(gjson.GetBytes(payload, path)); text != "" {
+							content.WriteString(text)
+						}
+					}
+					for _, path := range []string{"choices.0.delta.reasoning_content", "choices.0.delta.reasoning", "data.choices.0.delta.reasoning_content"} {
+						if text := workBuddyTextValue(gjson.GetBytes(payload, path)); text != "" {
+							reason.WriteString(text)
+						}
+					}
 					if id == "" {
 						id = gjson.GetBytes(payload, "id").String()
 					}
@@ -213,16 +232,8 @@ func aggregateWorkBuddyStream(resp *http.Response) (*http.Response, error) {
 						usage = json.RawMessage(frameUsage.Raw)
 					}
 					delta := gjson.GetBytes(payload, "choices.0.delta")
-					if delta.Exists() {
-						if text := delta.Get("content").String(); text != "" {
-							content.WriteString(text)
-						}
-						if text := delta.Get("reasoning_content").String(); text != "" {
-							reason.WriteString(text)
-						}
-						if calls := delta.Get("tool_calls"); calls.IsArray() {
-							tools = mergeWorkBuddyToolCalls(tools, calls.Array())
-						}
+					if calls := delta.Get("tool_calls"); calls.IsArray() {
+						tools = mergeWorkBuddyToolCalls(tools, calls.Array())
 					}
 					if reason_ := gjson.GetBytes(payload, "choices.0.finish_reason").String(); reason_ != "" {
 						finish = reason_
@@ -238,6 +249,9 @@ func aggregateWorkBuddyStream(resp *http.Response) (*http.Response, error) {
 		}
 	}
 
+	if content.Len() == 0 && reason.Len() == 0 && frameCount > 0 {
+		log.Printf("[WorkBuddy] 聚合后正文为空（frames=%d）首帧=%s", frameCount, truncateBodyForLog(firstFrame))
+	}
 	message := map[string]any{"role": "assistant"}
 	if content.Len() > 0 {
 		message["content"] = content.String()
@@ -417,6 +431,31 @@ func collectWorkBuddyModelIDs(node gjson.Result) []string {
 		}
 	}
 	return result
+}
+
+// workBuddyTextValue 从 gjson 节点取纯文本：字符串直接返回；分段数组
+// （[{"type":"text","text":"..."}]）拼接 text 字段。
+func workBuddyTextValue(node gjson.Result) string {
+	if !node.Exists() {
+		return ""
+	}
+	if node.Type == gjson.String {
+		return node.String()
+	}
+	if node.IsArray() {
+		var sb strings.Builder
+		for _, part := range node.Array() {
+			if part.Type == gjson.String {
+				sb.WriteString(part.String())
+				continue
+			}
+			if text := part.Get("text"); text.Type == gjson.String {
+				sb.WriteString(text.String())
+			}
+		}
+		return sb.String()
+	}
+	return ""
 }
 
 // workBuddyRequestID 生成 32 位十六进制请求标识（与官方客户端 X-Request-ID 同形）。
