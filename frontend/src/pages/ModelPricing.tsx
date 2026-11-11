@@ -902,7 +902,7 @@ export default function ModelPricing() {
 
   // 各 provider(渠道)模型数量:仅当存在多于一个渠道时才显示渠道过滤条。
   const channelCounts = useMemo(() => {
-    const m: Record<string, number> = { codex: 0, grok: 0, antigravity: 0, claude: 0 }
+    const m: Record<string, number> = { codex: 0, grok: 0, antigravity: 0, claude: 0, workbuddy: 0 }
     for (const r of rows) m[rowChannel(r)] += 1
     return m
   }, [rows])
