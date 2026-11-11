@@ -62,7 +62,7 @@ func (h *Handler) workBuddyChatCompletions(c *gin.Context) {
 	// displayMsg 明确写着「请求被拦截，请重新发送」）是可重试的瞬时拦截，
 	// 同一账号同一模型下一次往往就过。这里内部重试，避免把偶发拦截直接甩给客户端。
 	var resp *http.Response
-	const maxAttempts = 4
+	const maxAttempts = 5
 	for attempt := 1; attempt <= maxAttempts; attempt++ {
 		// 逐级降噪：1 原样，2 去掉温度/top_p/penalties 等装饰参数，3 再去掉 thinking。
 		level := 0
@@ -73,6 +73,8 @@ func (h *Handler) workBuddyChatCompletions(c *gin.Context) {
 			level = 3
 		case 4:
 			level = 4
+		case 5:
+			level = 5
 		}
 		resp, err = ExecuteWorkBuddyChatRequest(ctx, account, rawBody, account.ProxyURL, c.Request.Header, level)
 		if err != nil || resp.StatusCode < http.StatusBadRequest {

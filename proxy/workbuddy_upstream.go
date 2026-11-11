@@ -191,10 +191,11 @@ func prepareWorkBuddyChatBody(inboundBody []byte) []byte {
 	// 上游按 system 首段文本做「非官方客户端」指纹拦截（实测：
 	// "You are an AI agent powered by DeepSeek Harness." 稳定 11128，
 	// 去掉 "Harness" 后正常）。这里把已知签名改写掉，行为对模型无影响。
-	body = neutralizeWorkBuddyBlockedSignature(body)
 	// 上游只认 system/user/assistant/tool 四个角色，OpenAI 新客户端把 system 写成
 	// developer 会被风控判成「非法调用」直接回 11128（实测确定性复现，重试无效）。
+	// 必须先统一角色再做指纹改写，否则 developer 消息会被漏改。
 	body = normalizeWorkBuddyMessageRoles(body)
+	body = neutralizeWorkBuddyBlockedSignature(body)
 	// 上游只认 low/medium/high；客户端的 off/none/minimal、max/xhigh 这类档位会 400。
 	body = applyWorkBuddyDeepSeekThinking(body)
 	if effort := gjson.GetBytes(body, "reasoning_effort"); effort.Exists() && effort.Type == gjson.String {
@@ -228,7 +229,8 @@ func neutralizeWorkBuddyBlockedSignature(body []byte) []byte {
 		return body
 	}
 	for i, msg := range msgs.Array() {
-		if !strings.EqualFold(strings.TrimSpace(msg.Get("role").String()), "system") {
+		role := strings.ToLower(strings.TrimSpace(msg.Get("role").String()))
+		if role != "system" && role != "developer" {
 			continue
 		}
 		content := msg.Get("content")
@@ -265,6 +267,60 @@ func normalizeWorkBuddyMessageRoles(body []byte) []byte {
 	return body
 }
 
+// workBuddyShiftSystemToUser 把 system 消息降级成 user 消息。
+//
+// 上游对 role=system 的内容做第三方客户端分类（同一段文本换成 user 角色就不再
+// 返回 11128，实测）。只有当降噪重试仍被拦时才走到这里：语义上把系统提示作为
+// 首条 user 消息投喂，指令跟随会略弱，但能兜住被误判的请求。
+func workBuddyShiftSystemToUser(body []byte) ([]byte, error) {
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return body, err
+	}
+	rawMsgs, ok := payload["messages"]
+	if !ok {
+		return body, nil
+	}
+	var msgs []map[string]json.RawMessage
+	if err := json.Unmarshal(rawMsgs, &msgs); err != nil {
+		return body, err
+	}
+	var systemParts []string
+	rest := make([]map[string]json.RawMessage, 0, len(msgs))
+	for _, msg := range msgs {
+		role := strings.ToLower(strings.TrimSpace(strings.Trim(string(msg["role"]), "\"")))
+		if role == "system" || role == "developer" {
+			var content string
+			if raw, ok := msg["content"]; ok {
+				_ = json.Unmarshal(raw, &content)
+			}
+			if strings.TrimSpace(content) != "" {
+				systemParts = append(systemParts, content)
+			}
+			continue
+		}
+		rest = append(rest, msg)
+	}
+	if len(systemParts) == 0 {
+		return body, nil
+	}
+	merged := map[string]json.RawMessage{}
+	merged["role"] = json.RawMessage(`"user"`)
+	contentRaw, _ := json.Marshal("[System instructions]\n" + strings.Join(systemParts, "\n\n"))
+	merged["content"] = contentRaw
+	outMsgs := append([]map[string]json.RawMessage{merged}, rest...)
+	encoded, err := json.Marshal(outMsgs)
+	if err != nil {
+		return body, err
+	}
+	payload["messages"] = encoded
+	final, err := json.Marshal(payload)
+	if err != nil {
+		return body, err
+	}
+	return final, nil
+}
+
 // workBuddySanitizeBody 按级别剥离客户端带来的「非必要字段」。
 //
 // 背景：部分客户端会带上 temperature/top_p/penalties/response_format 之类的
@@ -287,6 +343,9 @@ func workBuddySanitizeBody(body []byte, level int) []byte {
 	}
 	for _, field := range []string{"thinking", "reasoning_effort"} {
 		body, _ = sjson.DeleteBytes(body, field)
+	}
+	if level >= 5 {
+		body, _ = workBuddyShiftSystemToUser(body)
 	}
 	if level < 4 {
 		return body
