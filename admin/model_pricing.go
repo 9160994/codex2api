@@ -212,6 +212,34 @@ func (h *Handler) claudeChannelModels() []string {
 	return models
 }
 
+// workbuddyChannelModels 返回定价页要展示的 WorkBuddy 模型:各 WorkBuddy 账号
+// 模型白名单的并集。没有 WorkBuddy 账号时返回空。
+func (h *Handler) workbuddyChannelModels() []string {
+	if h == nil || h.store == nil {
+		return nil
+	}
+	seen := make(map[string]struct{})
+	models := make([]string, 0)
+	for _, account := range h.store.Accounts() {
+		if account == nil || !account.IsWorkBuddy() {
+			continue
+		}
+		for _, model := range account.WorkBuddyModels() {
+			key := strings.ToLower(strings.TrimSpace(model))
+			if key == "" {
+				continue
+			}
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			models = append(models, model)
+		}
+	}
+	sort.Strings(models)
+	return models
+}
+
 // claudeAvailableChannelModels returns models from enabled, non-banned Claude
 // accounts for request-facing catalogs. Pricing/history still use
 // claudeChannelModels so a disabled account cannot make an unusable model
@@ -301,14 +329,16 @@ func (h *Handler) ListModelPricing(c *gin.Context) {
 	grokKeys := dedup(append(h.grokBillingModelIDs(), grokDefaultDisplayModelIDs()...))
 	antigravityKeys := dedup(h.antigravityChannelModels())
 	claudeKeys := dedup(h.claudeChannelModels())
+	workbuddyKeys := dedup(h.workbuddyChannelModels())
 
 	// 每个渠道内按新版本在前排序；渠道之间整体拼接,避免版本号交叉穿插。
 	sortModelKeysNewestFirst(keys)
 	sortModelKeysNewestFirst(grokKeys)
 	sortModelKeysNewestFirst(antigravityKeys)
 	sortModelKeysNewestFirst(claudeKeys)
+	sortModelKeysNewestFirst(workbuddyKeys)
 
-	rows := make([]modelPricingRow, 0, len(keys)+len(grokKeys)+len(antigravityKeys)+len(claudeKeys))
+	rows := make([]modelPricingRow, 0, len(keys)+len(grokKeys)+len(antigravityKeys)+len(claudeKeys)+len(workbuddyKeys))
 	appendRows := func(modelKeys []string, channel string) {
 		for _, key := range modelKeys {
 			canonicalModel := database.PricingAliasTarget(key)
@@ -327,6 +357,7 @@ func (h *Handler) ListModelPricing(c *gin.Context) {
 	appendRows(grokKeys, database.UpstreamChannelGrok)
 	appendRows(antigravityKeys, database.UpstreamChannelAntigravity)
 	appendRows(claudeKeys, database.UpstreamChannelClaude)
+	appendRows(workbuddyKeys, database.UpstreamChannelWorkBuddy)
 
 	syncURL := ""
 	if s, err := h.db.GetSystemSettings(ctx); err == nil && s != nil {

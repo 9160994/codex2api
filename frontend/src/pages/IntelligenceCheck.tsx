@@ -236,6 +236,7 @@ export default function IntelligenceCheck() {
                     ["claude", "Claude"],
                     ["grok", "Grok"],
                     ["antigravity", "Antigravity"],
+                    ["workbuddy", "WorkBuddy"],
                   ] as const).map(([channel, label]) => (
                     <label key={channel} className="flex items-center justify-between gap-3 rounded-md bg-muted/40 px-3 py-2 text-sm">
                       <span>{label}</span>
@@ -246,6 +247,7 @@ export default function IntelligenceCheck() {
                           claude: settings.channels?.claude ?? true,
                           grok: settings.channels?.grok ?? false,
                           antigravity: settings.channels?.antigravity ?? false,
+                          workbuddy: settings.channels?.workbuddy ?? false,
                           [channel]: value,
                         })} />
                     </label>
@@ -255,6 +257,7 @@ export default function IntelligenceCheck() {
               </div>
               {field("Grok 检测模型", <Input value={settings.grok_model ?? "grok-4.5"} onChange={(e) => change("grok_model", e.target.value)} />)}
               {field("Antigravity 检测模型", <Input value={settings.antigravity_model ?? "gemini-3.8-flash-medium"} onChange={(e) => change("antigravity_model", e.target.value)} />)}
+              {field("WorkBuddy 检测模型", <Input value={settings.workbuddy_model ?? "deepseek-v4-flash"} onChange={(e) => change("workbuddy_model", e.target.value)} />)}
               {field(
                 "GPT / Codex 模型",
                 <Input
@@ -371,10 +374,10 @@ export default function IntelligenceCheck() {
                       }
                       placeholder="选择分组"
                       options={groups
-                        .filter(g => !g.channel || ["codex", "claude", "grok", "antigravity"].includes(g.channel))
+                        .filter(g => !g.channel || ["codex", "claude", "grok", "antigravity", "workbuddy"].includes(g.channel))
                         .map(g => ({
                           value: String(g.id),
-                          label: `${g.name}（${({ codex: "Codex", claude: "Claude", grok: "Grok", antigravity: "Antigravity" } as Record<string, string>)[g.channel ?? "codex"] ?? g.channel}）`,
+                          label: `${g.name}（${({ codex: "Codex", claude: "Claude", grok: "Grok", antigravity: "Antigravity", workbuddy: "WorkBuddy" } as Record<string, string>)[g.channel ?? "codex"] ?? g.channel}）`,
                         }))}
                     />,
                   )}

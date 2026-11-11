@@ -275,10 +275,10 @@ export default function Dashboard() {
   const errorCount = effectiveCounts?.error ?? 0
   const todayRequests = effectiveCounts?.today_requests ?? 0
   const channelBreakdown = !channel && stats?.channels
-    ? (['codex', 'grok', 'antigravity', 'claude'] as const)
+    ? (['codex', 'grok', 'antigravity', 'claude', 'workbuddy'] as const)
         .filter((key) => isChannelVisible(key))
         .map((key) => ({ key, counts: stats.channels?.[key] }))
-        .filter((item): item is { key: 'codex' | 'grok' | 'antigravity' | 'claude'; counts: StatsChannelCounts } =>
+        .filter((item): item is { key: 'codex' | 'grok' | 'antigravity' | 'claude' | 'workbuddy'; counts: StatsChannelCounts } =>
           Boolean(item.counts && item.counts.total > 0))
     : []
 

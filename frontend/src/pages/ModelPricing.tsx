@@ -60,13 +60,14 @@ type Row = {
   media_unit?: MediaBillingUnit
 }
 type SourceFilter = 'all' | 'custom' | 'synced' | 'default' | 'unsaved'
-type ChannelFilter = 'all' | 'codex' | 'grok' | 'antigravity' | 'claude'
-const CHANNEL_ORDER: Array<Exclude<ChannelFilter, 'all'>> = ['codex', 'grok', 'antigravity', 'claude']
+type ChannelFilter = 'all' | 'codex' | 'grok' | 'antigravity' | 'claude' | 'workbuddy'
+const CHANNEL_ORDER: Array<Exclude<ChannelFilter, 'all'>> = ['codex', 'grok', 'antigravity', 'claude', 'workbuddy']
 const CHANNEL_LABEL: Record<Exclude<ChannelFilter, 'all'>, string> = {
   codex: 'Codex',
   grok: 'Grok',
   antigravity: 'Antigravity',
   claude: 'Claude',
+  workbuddy: 'WorkBuddy',
 }
 function rowChannel(r: Row): Exclude<ChannelFilter, 'all'> {
   const c = (r.channel || '').toLowerCase()

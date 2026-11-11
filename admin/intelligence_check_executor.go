@@ -1,6 +1,7 @@
 package admin
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -43,6 +44,8 @@ func intelligenceAccountChannel(account *auth.Account) string {
 		return "grok"
 	case account.IsClaudeOAuth():
 		return "claude"
+	case account.IsWorkBuddy():
+		return "workbuddy"
 	default:
 		return "codex"
 	}
@@ -56,7 +59,8 @@ func (h *Handler) executeIntelligenceCheck(ctx context.Context, account *auth.Ac
 		return intelligenceExecution{Interrupted: true, Error: "配置错误：该账号渠道不支持降智检测"}
 	}
 	claude := account.IsClaudeOAuth()
-	if claude || account.IsGrokAPI() || account.IsAntigravityAPI() {
+	workbuddy := account.IsWorkBuddy()
+	if claude || workbuddy || account.IsGrokAPI() || account.IsAntigravityAPI() {
 		effort = ""
 	}
 	if err := h.validateQualityTestForAccount(ctx, account, qualityTestRequest{Model: model, ReasoningEffort: effort}); err != nil {
@@ -64,7 +68,11 @@ func (h *Handler) executeIntelligenceCheck(ctx context.Context, account *auth.Ac
 	}
 	payload := map[string]any{"model": model, "stream": true}
 	security := h.store.ClaudeSecurityConfig()
-	if claude {
+	if workbuddy {
+		// WorkBuddy 只吃 chat.completions：直接用 messages，压缩预算交给上游。
+		payload["messages"] = []map[string]any{{"role": "user", "content": prompt}}
+		payload["max_tokens"] = 8192
+	} else if claude {
 		maxTokens := int64(32768)
 		if security.MaxOutputTokens > 0 && security.MaxOutputTokens < maxTokens {
 			maxTokens = security.MaxOutputTokens
@@ -122,6 +130,8 @@ func (h *Handler) executeIntelligenceCheck(ctx context.Context, account *auth.Ac
 		h.logConnectionTestUsage(nil, account, connectionTestUsageInput{Reason: "intelligence_check", Endpoint: connectionTestEndpoint(account), Model: model, EffectiveModel: result.ResponseModel, ReasoningEffort: effort, StatusCode: statusCode, DurationMs: int(result.DurationMS), InputTokens: result.InputTokens, OutputTokens: result.OutputTokens, ReasoningTokens: result.ReasoningTokens, CachedTokens: result.CachedTokens, ErrorMessage: result.Error, ViaWebsocket: result.EffectiveContext["transport"] == "websocket"})
 	}()
 	switch {
+	case workbuddy:
+		resp, err = proxy.ExecuteWorkBuddyChatRequest(ctx, account, body, proxyURL, make(http.Header))
 	case claude:
 		resp, err = proxy.ExecuteClaudeMessagesRequest(ctx, account, body, proxyURL, make(http.Header), fingerprint, security)
 	case account.IsAntigravityAPI():
@@ -151,7 +161,11 @@ func (h *Handler) executeIntelligenceCheck(ctx context.Context, account *auth.Ac
 	} else if !account.IsRelayStyle() {
 		proxy.SyncCodexUsageState(h.store, account, resp)
 	}
-	result = readIntelligenceStream(resp.Body, claude)
+	if workbuddy {
+		result = readIntelligenceChatStream(resp.Body)
+	} else {
+		result = readIntelligenceStream(resp.Body, claude)
+	}
 	result.CredentialRejected = intelligenceCredentialRejected(result.terminalPayload)
 	if ctx.Err() != nil {
 		result.Complete = false
@@ -167,6 +181,50 @@ func (h *Handler) executeIntelligenceCheck(ctx context.Context, account *auth.Ac
 		}
 	}
 	return
+}
+
+// readIntelligenceChatStream 解析标准 OpenAI Chat Completions SSE（workbuddy 渠道）。
+// 只取正文，忽略 reasoning_content；usage 末帧带回 token 计数。
+func readIntelligenceChatStream(body io.Reader) (result intelligenceExecution) {
+	scanner := bufio.NewScanner(body)
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+	var output strings.Builder
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if payload == "" {
+			continue
+		}
+		if payload == "[DONE]" {
+			result.Complete = true
+			continue
+		}
+		if model := gjson.Get(payload, "model").String(); model != "" {
+			result.ResponseModel = model
+		}
+		for _, choice := range gjson.Get(payload, "choices").Array() {
+			if text := choice.Get("delta.content").String(); text != "" {
+				output.WriteString(text)
+			}
+			if reason := choice.Get("finish_reason").String(); reason != "" {
+				result.Complete = true
+			}
+		}
+		if usage := gjson.Get(payload, "usage"); usage.Exists() && usage.Get("total_tokens").Int() > 0 {
+			result.InputTokens = int(usage.Get("prompt_tokens").Int())
+			result.OutputTokens = int(usage.Get("completion_tokens").Int())
+			result.ReasoningTokens = int(usage.Get("completion_tokens_details.reasoning_tokens").Int())
+			result.CachedTokens = int(usage.Get("prompt_tokens_details.cached_tokens").Int())
+		}
+	}
+	result.Output = output.String()
+	if err := scanner.Err(); err != nil {
+		result.Error = err.Error()
+	}
+	return result
 }
 
 // applyIntelligenceUpstreamFailure preserves each source's native HTTP failure policy.

@@ -22,9 +22,11 @@ type Question struct {
 type Settings struct {
 	GrokModelSupplied        bool            `json:"-"`
 	AntigravityModelSupplied bool            `json:"-"`
+	WorkBuddyModelSupplied   bool            `json:"-"`
 	Channels                 map[string]bool `json:"channels,omitempty"`
 	GrokModel                string          `json:"grok_model,omitempty"`
 	AntigravityModel         string          `json:"antigravity_model,omitempty"`
+	WorkBuddyModel           string          `json:"workbuddy_model,omitempty"`
 	AdaptiveEnabled          bool            `json:"adaptive_enabled"`
 	PauseInitialSeconds      int             `json:"pause_initial_seconds"`
 	PauseMaxSeconds          int             `json:"pause_max_seconds"`
@@ -62,6 +64,7 @@ func (s *Settings) UnmarshalJSON(data []byte) error {
 	}
 	_, decoded.GrokModelSupplied = fields["grok_model"]
 	_, decoded.AntigravityModelSupplied = fields["antigravity_model"]
+	_, decoded.WorkBuddyModelSupplied = fields["workbuddy_model"]
 	*s = Settings(decoded)
 	return nil
 }
@@ -99,6 +102,13 @@ func (s Settings) ModelForChannel(channel string) (string, string) {
 			return s.AntigravityModel, ""
 		}
 		return "gemini-3.8-flash-medium", ""
+	case "workbuddy":
+		if s.WorkBuddyModel != "" {
+			return s.WorkBuddyModel, ""
+		}
+		// deepseek-v4-pro 在推理题上会把预算全用在思考、迟迟不产出正文，
+		// 检测走 flash 更快也更稳定。
+		return "deepseek-v4-flash", ""
 	default:
 		return s.GPTModel, s.ReasoningEffort
 	}
@@ -108,12 +118,12 @@ func (s Settings) ModelForChannel(channel string) (string, string) {
 func ValidateSettings(s Settings) error {
 	for channel := range s.Channels {
 		switch channel {
-		case "codex", "claude", "grok", "antigravity":
+		case "codex", "claude", "grok", "antigravity", "workbuddy":
 		default:
 			return fmt.Errorf("unknown intelligence check channel: %s", channel)
 		}
 	}
-	for _, model := range []string{s.GrokModel, s.AntigravityModel} {
+	for _, model := range []string{s.GrokModel, s.AntigravityModel, s.WorkBuddyModel} {
 		if model != "" && strings.TrimSpace(model) == "" {
 			return fmt.Errorf("model must not contain only whitespace")
 		}
