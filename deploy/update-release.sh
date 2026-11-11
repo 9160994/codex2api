@@ -13,8 +13,10 @@ cd "$(dirname "$0")"
 REPO="${REPO:-9160994/codex2api}"
 TAG="${TAG:-build-latest}"
 ASSET="codex2api-linux-amd64.tar.gz"
-URL="https://github.com/${REPO}/releases/download/${TAG}/${ASSET}"
-SHA_URL="${URL}.sha256"
+PATH_PART="https://github.com/${REPO}/releases/download/${TAG}/${ASSET}"
+# 国内直连 GitHub Release 常年 10~20KB/s（24MB 要半小时），按顺序试加速镜像，
+# 谁先跑到 150KB/s 以上就用谁；直连放最后兜底。
+MIRRORS=("https://ghfast.top/" "https://gh-proxy.com/" "")
 BIN="./codex2api-workbuddy-linux-amd64"
 COMPOSE="-f docker-compose.sqlite.yml -f docker-compose.sqlite.build.yml"
 
@@ -44,8 +46,24 @@ docker run --rm -v codex2api-sqlite_sqlite-data:/data -v "$PWD":/backup alpine \
 echo "==> 3/5 下载并校验二进制"
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
-curl -fsSL -o "$tmp/$ASSET" "$URL"
-curl -fsSL -o "$tmp/$ASSET.sha256" "$SHA_URL" 2>/dev/null || true
+downloaded=0
+for prefix in "${MIRRORS[@]}"; do
+  url="${prefix}${PATH_PART}"
+  echo "    尝试下载：${prefix:-直连 GitHub}"
+  if curl -fsSL --max-time 900 --speed-limit 150000 --speed-time 10        -o "$tmp/$ASSET" "$url"; then
+    downloaded=1
+    echo "    下载完成：$(du -h "$tmp/$ASSET" | cut -f1)（来源 ${prefix:-直连}）"
+    break
+  fi
+  echo "    该来源过慢或失败，换下一个"
+done
+if [ "$downloaded" != "1" ]; then
+  echo "    所有下载源都失败，终止（未改动服务）"
+  exit 1
+fi
+for prefix in "${MIRRORS[@]}"; do
+  if curl -fsSL --max-time 60 -o "$tmp/$ASSET.sha256" "${prefix}${PATH_PART}.sha256" 2>/dev/null; then break; fi
+done
 if [ -s "$tmp/$ASSET.sha256" ]; then
   ( cd "$tmp" && sha256sum -c "$ASSET.sha256" ) || { echo "    校验失败，终止"; exit 1; }
   echo "    sha256 校验通过"
