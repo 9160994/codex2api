@@ -1,0 +1,71 @@
+name: Server binary
+
+# 给自建服务器用的预编译二进制：push 到 main 后自动构建 linux/amd64 静态二进制，
+# 发布到滚动 Release `build-latest`，服务器执行 ./update.sh 即可下载并更新（约 15 秒）。
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - '**.md'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: server-binary
+  cancel-in-progress: true
+
+env:
+  ASSET: codex2api-linux-amd64.tar.gz
+  TAG: build-latest
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build admin frontend
+        working-directory: frontend
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build static binary
+        env:
+          SHORT_SHA: ${{ github.sha }}
+        run: |
+          VERSION="ci-${SHORT_SHA::7}"
+          echo "BUILD_VERSION=$VERSION" >> "$GITHUB_ENV"
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath \
+            -ldflags "-s -w -X github.com/codex2api/internal/version.Version=$VERSION" \
+            -o codex2api-linux-amd64 .
+          tar czf "$ASSET" codex2api-linux-amd64
+          sha256sum "$ASSET" > "$ASSET.sha256"
+          cat "$ASSET.sha256"
+
+      - name: Publish rolling release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view "$TAG" >/dev/null 2>&1 || \
+            gh release create "$TAG" --title "Latest build" --prerelease \
+              --notes "每次 push 到 main 自动重建，供自建服务器 ./update.sh 下载。"
+          gh release upload "$TAG" "$ASSET" "$ASSET.sha256" --clobber
+          gh release edit "$TAG" --notes "构建版本：$BUILD_VERSION　提交：${{ github.sha }}" >/dev/null
