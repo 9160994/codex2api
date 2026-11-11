@@ -490,7 +490,7 @@ func (t *workBuddyFrameTap) Read(p []byte) (int, error) {
 		if !t.logged {
 			t.logged = true
 			t.firstLen = len(t.buf)
-			log.Printf("[WorkBuddy] WORKBUDDY-RAW-FIRST (%d bytes) %s", t.firstLen, truncateBodyForLog(t.buf))
+			log.Printf("[WorkBuddy] WORKBUDDY-RAW-FIRST (%d bytes) %q", t.firstLen, workBuddyHead(t.buf, 900))
 		}
 	}
 	if err != nil {
@@ -501,7 +501,7 @@ func (t *workBuddyFrameTap) Read(p []byte) (int, error) {
 
 func (t *workBuddyFrameTap) dumpRemainder() {
 	if len(t.buf) > t.firstLen {
-		log.Printf("[WorkBuddy] WORKBUDDY-RAW-REST (total=%d) %s", len(t.buf), truncateBodyForLog(t.buf[t.firstLen:]))
+		log.Printf("[WorkBuddy] WORKBUDDY-RAW-REST (total=%d) %q", len(t.buf), workBuddyHead(t.buf[t.firstLen:], 900))
 		t.firstLen = len(t.buf)
 	}
 }
@@ -512,6 +512,14 @@ func (t *workBuddyFrameTap) Close() error {
 		return closer.Close()
 	}
 	return nil
+}
+
+// workBuddyHead 取前 n 字节，供 %q 转义打印，便于看清事件分隔符。
+func workBuddyHead(b []byte, n int) []byte {
+	if len(b) > n {
+		return b[:n]
+	}
+	return b
 }
 
 // workBuddyDoneAppendingBody 在 SSE 流 EOF 处补一个 `data: [DONE]`。
