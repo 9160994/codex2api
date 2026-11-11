@@ -188,6 +188,9 @@ func prepareWorkBuddyChatBody(inboundBody []byte) []byte {
 	if choice := gjson.GetBytes(body, "tool_choice"); choice.Exists() && choice.IsObject() {
 		body, _ = sjson.SetBytes(body, "tool_choice", "auto")
 	}
+	// 上游只认 system/user/assistant/tool 四个角色，OpenAI 新客户端把 system 写成
+	// developer 会被风控判成「非法调用」直接回 11128（实测确定性复现，重试无效）。
+	body = normalizeWorkBuddyMessageRoles(body)
 	// 上游只认 low/medium/high；客户端的 off/none/minimal、max/xhigh 这类档位会 400。
 	body = applyWorkBuddyDeepSeekThinking(body)
 	if effort := gjson.GetBytes(body, "reasoning_effort"); effort.Exists() && effort.Type == gjson.String {
@@ -196,6 +199,22 @@ func prepareWorkBuddyChatBody(inboundBody []byte) []byte {
 			body, _ = sjson.SetBytes(body, "reasoning_effort", "low")
 		case "max", "maximum", "xhigh", "x-high", "ultra":
 			body, _ = sjson.SetBytes(body, "reasoning_effort", "high")
+		}
+	}
+	return body
+}
+
+// normalizeWorkBuddyMessageRoles 把客户端的新角色名映射回上游认识的四个角色。
+// 目前只处理 OpenAI 的 developer → system（推理模型客户端普遍这么发）。
+func normalizeWorkBuddyMessageRoles(body []byte) []byte {
+	msgs := gjson.GetBytes(body, "messages")
+	if !msgs.IsArray() {
+		return body
+	}
+	for i, msg := range msgs.Array() {
+		role := strings.ToLower(strings.TrimSpace(msg.Get("role").String()))
+		if role == "developer" {
+			body, _ = sjson.SetBytes(body, fmt.Sprintf("messages.%d.role", i), "system")
 		}
 	}
 	return body
