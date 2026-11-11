@@ -13,6 +13,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -54,6 +55,7 @@ func ExecuteWorkBuddyChatRequest(ctx context.Context, account *auth.Account, inb
 		return nil, errors.New("workbuddy: 账号缺少 access token，请重新登录授权")
 	}
 	clientStream := gjson.GetBytes(inboundBody, "stream").Bool()
+	log.Printf("[WorkBuddy] EXEC account=%d base=%s model=%s stream=%v", account.ID(), account.WorkBuddyBaseURL(), gjson.GetBytes(inboundBody, "model").String(), clientStream)
 	body := prepareWorkBuddyChatBody(inboundBody)
 
 	proxyURL := proxyOverride
@@ -66,6 +68,22 @@ func ExecuteWorkBuddyChatRequest(ctx context.Context, account *auth.Account, inb
 	}
 	applyWorkBuddyChatHeaders(req, account, headers)
 
+	if workBuddyFrameDebugEnabled() {
+		keys := make([]string, 0, len(req.Header))
+		for key := range req.Header {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		var sb strings.Builder
+		for _, key := range keys {
+			value := req.Header.Get(key)
+			if strings.EqualFold(key, "Authorization") && len(value) > 12 {
+				value = value[:12] + "…"
+			}
+			sb.WriteString(key + "=" + value + "; ")
+		}
+		log.Printf("[WorkBuddy] REQ-HEADERS %s", sb.String())
+	}
 	client, err := auth.NewWorkBuddyHTTPClient(proxyURL, workBuddyChatTimeout)
 	if err != nil {
 		return nil, err
@@ -84,6 +102,7 @@ func ExecuteWorkBuddyChatRequest(ctx context.Context, account *auth.Account, inb
 		}
 		resp.Body = io.NopCloser(bytes.NewReader(raw))
 	}
+	log.Printf("[WorkBuddy] resp status=%d ct=%q", resp.StatusCode, resp.Header.Get("Content-Type"))
 	if workBuddyFrameDebugEnabled() && resp.Body != nil {
 		resp.Body = &workBuddyFrameTap{reader: resp.Body, limit: 2000}
 	}
@@ -450,32 +469,44 @@ func workBuddyFrameDebugEnabled() bool {
 // workBuddyFrameTap 抓取上游响应的前 limit 字节并打一行日志，其余数据原样透传。
 // 只在 WORKBUDDY_DEBUG_FRAMES=1 时挂载，不改变正常路径行为。
 type workBuddyFrameTap struct {
-	reader io.Reader
-	buf    []byte
-	limit  int
-	logged bool
+	reader   io.Reader
+	buf      []byte
+	firstLen int
+	limit    int
+	logged   bool
 }
 
 func (t *workBuddyFrameTap) Read(p []byte) (int, error) {
 	n, err := t.reader.Read(p)
-	if n > 0 && !t.logged {
-		t.buf = append(t.buf, p[:n]...)
-		if len(t.buf) >= t.limit || err != nil {
-			t.flush()
+	if n > 0 {
+		if room := 16384 - len(t.buf); room > 0 {
+			take := n
+			if take > room {
+				take = room
+			}
+			t.buf = append(t.buf, p[:take]...)
+		}
+		if !t.logged {
+			t.logged = true
+			t.firstLen = len(t.buf)
+			log.Printf("[WorkBuddy] WORKBUDDY-RAW-FIRST (%d bytes) %s", t.firstLen, truncateBodyForLog(t.buf))
 		}
 	}
-	if err != nil && !t.logged {
-		t.flush()
+	if err != nil {
+		t.dumpRemainder()
 	}
 	return n, err
 }
 
-func (t *workBuddyFrameTap) flush() {
-	t.logged = true
-	log.Printf("[WorkBuddy] WORKBUDDY-RAW (%d bytes) %s", len(t.buf), truncateBodyForLog(t.buf))
+func (t *workBuddyFrameTap) dumpRemainder() {
+	if len(t.buf) > t.firstLen {
+		log.Printf("[WorkBuddy] WORKBUDDY-RAW-REST (total=%d) %s", len(t.buf), truncateBodyForLog(t.buf[t.firstLen:]))
+		t.firstLen = len(t.buf)
+	}
 }
 
 func (t *workBuddyFrameTap) Close() error {
+	t.dumpRemainder()
 	if closer, ok := t.reader.(io.Closer); ok {
 		return closer.Close()
 	}
