@@ -304,6 +304,10 @@ func ApplyWorkBuddyCommonHeaders(req *http.Request, account *Account) {
 	req.Header.Set("Referer", origin+"/")
 	req.Header.Set("User-Agent", WorkBuddyUserAgent(account))
 	req.Header.Set("X-CodeBuddy-Request", "1")
+	// 上游按 X-Product 做「通道校验」：缺失/不符会 400 code=11128
+	// 「Illegal API invocation from an unapproved channel / 请求被拦截，请重新发送」。
+	// 官方 CLI 上报的渠道就是 SaaS。
+	req.Header.Set("X-Product", "SaaS")
 	req.Header.Set("Accept-Language", language)
 	if uid != "" {
 		req.Header.Set("X-User-Id", uid)

@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -100,6 +102,18 @@ func applyWorkBuddyChatHeaders(req *http.Request, account *auth.Account, downstr
 	if domain := strings.TrimSpace(downstreamDomain(account)); domain != "" {
 		req.Header.Set("X-Domain", domain)
 	}
+	// 官方客户端每次 user send 都带一组会话/请求追踪头，上游的通道校验会看它们。
+	// 网关没有真实会话语义，用一次请求内恒定的随机 id 顶上（同一请求所有头同值）。
+	if reqID := workBuddyRequestID(); reqID != "" {
+		req.Header.Set("X-Request-ID", reqID)
+		req.Header.Set("X-Conversation-Message-ID", reqID)
+		req.Header.Set("X-Conversation-Request-ID", reqID)
+		req.Header.Set("X-Root-Request-ID", reqID)
+		req.Header.Set("X-Trace-ID", reqID)
+		req.Header.Set("X-B3-TraceId", reqID)
+		req.Header.Set("X-B3-SpanId", reqID[:16])
+		req.Header.Set("X-B3-Sampled", "1")
+	}
 	// 客户端 x-request-id 透传，便于反查；不伪造会话聚合头。
 	if downstream != nil {
 		for _, key := range []string{"X-Request-Id", "X-Conversation-Id"} {
@@ -110,13 +124,13 @@ func applyWorkBuddyChatHeaders(req *http.Request, account *auth.Account, downstr
 	}
 }
 
-// downstreamDomain 返回账号声明的 X-Domain：global 域声明 workbuddy.ai，
-// 国内域缺省不发（上游按 Referer 归属）。
+// downstreamDomain 返回账号的 X-Domain：与官方客户端一致，国内声明 codebuddy.cn，
+// 国际声明 workbuddy.ai。缺失该头同样会进 11128 通道校验失败分支。
 func downstreamDomain(account *auth.Account) string {
 	if account != nil && account.WorkBuddyDomain() == auth.WorkBuddyRealmGlobal {
 		return "www.workbuddy.ai"
 	}
-	return ""
+	return "www.codebuddy.cn"
 }
 
 // prepareWorkBuddyChatBody 让上游恒走 SSE（非流式客户端由网关聚合），并修掉上游
@@ -403,6 +417,15 @@ func collectWorkBuddyModelIDs(node gjson.Result) []string {
 		}
 	}
 	return result
+}
+
+// workBuddyRequestID 生成 32 位十六进制请求标识（与官方客户端 X-Request-ID 同形）。
+func workBuddyRequestID() string {
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		return ""
+	}
+	return hex.EncodeToString(buf)
 }
 
 func truncateBodyForLog(body []byte) string {
