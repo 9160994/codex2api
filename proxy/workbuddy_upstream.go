@@ -84,6 +84,9 @@ func ExecuteWorkBuddyChatRequest(ctx context.Context, account *auth.Account, inb
 		resp.Body = io.NopCloser(bytes.NewReader(raw))
 	}
 	if clientStream {
+		// 上游经常不发终止帧（data: [DONE]）就关流，下游中继会把「没有终止事件」
+		// 判成 upstream_stream_break。这里在 EOF 处补一个标准终止帧兜底。
+		resp.Body = newWorkBuddyDoneAppendingBody(resp.Body)
 		return resp, nil
 	}
 	return aggregateWorkBuddyStream(resp)
@@ -431,6 +434,59 @@ func collectWorkBuddyModelIDs(node gjson.Result) []string {
 		}
 	}
 	return result
+}
+
+// workBuddyDoneAppendingBody 在 SSE 流 EOF 处补一个 `data: [DONE]`。
+// 上游时不时漏发终止事件，缺了它下游一律按「流提前结束」报错。
+type workBuddyDoneAppendingBody struct {
+	reader   io.Reader
+	pending  []byte
+	eof      bool
+	appended bool
+}
+
+func newWorkBuddyDoneAppendingBody(reader io.Reader) io.ReadCloser {
+	return &workBuddyDoneReader{reader: reader}
+}
+
+type workBuddyDoneReader struct {
+	reader   io.Reader
+	pending  []byte
+	eof      bool
+	appended bool
+}
+
+func (r *workBuddyDoneReader) Read(p []byte) (int, error) {
+	if len(r.pending) > 0 {
+		n := copy(p, r.pending)
+		r.pending = r.pending[n:]
+		return n, nil
+	}
+	if r.eof {
+		return 0, io.EOF
+	}
+	n, err := r.reader.Read(p)
+	if n > 0 {
+		return n, nil
+	}
+	if err == io.EOF && !r.appended {
+		r.appended = true
+		r.eof = true
+		r.pending = []byte("\n\ndata: [DONE]\n\n")
+		if len(r.pending) > 0 {
+			m := copy(p, r.pending)
+			r.pending = r.pending[m:]
+			return m, nil
+		}
+	}
+	return n, err
+}
+
+func (r *workBuddyDoneReader) Close() error {
+	if closer, ok := r.reader.(io.Closer); ok {
+		return closer.Close()
+	}
+	return nil
 }
 
 // workBuddyTextValue 从 gjson 节点取纯文本：字符串直接返回；分段数组
