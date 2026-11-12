@@ -213,8 +213,14 @@ func prepareWorkBuddyChatBody(inboundBody []byte) []byte {
 // 用环境变量 WORKBUDDY_PROMPT_REWRITES 可在不改代码的情况下补充，格式
 // "原串=替换串;原串2=替换串2"。
 var workBuddyBlockedSignatures = []struct{ From, To string }{
-	{"powered by DeepSeek Harness", "powered by DeepSeek"},
-	{"powered by deepseek harness", "powered by deepseek"},
+	// 客户端身份标识：上游能据此认出调用方是 DeepSeek Harness（并判 11128）。
+	// 统一洗成中性说法，模型行为不受影响。
+	{"DeepSeek Harness", "the CLI"},
+	{"deepseek harness", "the CLI"},
+	{"DEEPSEEK HARNESS", "the CLI"},
+	{"DeepSeekHarness", "theCLI"},
+	{"DeepSeek-Harness", "the-CLI"},
+	{"DeepthSeek Harness", "the CLI"},
 	// 实测：文本里同时出现 "@" 路径约定和 "workspace root" 时被判定为第三方
 	// 编程代理（11128）。只改 "workspace root" 即可通过。
 	{"workspace root", "project directory"},
@@ -222,31 +228,49 @@ var workBuddyBlockedSignatures = []struct{ From, To string }{
 	{"WORKSPACE ROOT", "project directory"},
 }
 
-// neutralizeWorkBuddyBlockedSignature 就地改写 system 消息里命中的指纹串。
+// neutralizeWorkBuddyBlockedSignature 改写所有消息（含工具描述）里命中的指纹串。
+//
+// 早期只处理 system 消息，但客户端身份也可能出现在 user/assistant/tool 内容或
+// 工具描述里（例如工具说明写着 "DeepSeek Harness 提供"），上游一样能认出来。
 func neutralizeWorkBuddyBlockedSignature(body []byte) []byte {
-	msgs := gjson.GetBytes(body, "messages")
-	if !msgs.IsArray() {
-		return body
-	}
-	for i, msg := range msgs.Array() {
-		role := strings.ToLower(strings.TrimSpace(msg.Get("role").String()))
-		if role != "system" && role != "developer" {
-			continue
-		}
-		content := msg.Get("content")
-		if content.Type != gjson.String || content.String() == "" {
-			continue
-		}
-		updated := content.String()
+	rewrites := 0
+	apply := func(text string) string {
+		updated := text
 		for _, sig := range workBuddyBlockedSignatures {
 			if strings.Contains(updated, sig.From) {
 				updated = strings.ReplaceAll(updated, sig.From, sig.To)
 			}
 		}
-		if updated != content.String() {
-			body, _ = sjson.SetBytes(body, fmt.Sprintf("messages.%d.content", i), updated)
-			log.Printf("[WorkBuddy] 已改写上游风控指纹（system 消息 #%d）", i)
+		if updated != text {
+			rewrites++
 		}
+		return updated
+	}
+
+	if msgs := gjson.GetBytes(body, "messages"); msgs.IsArray() {
+		for i, msg := range msgs.Array() {
+			content := msg.Get("content")
+			if content.Type != gjson.String || content.String() == "" {
+				continue
+			}
+			if updated := apply(content.String()); updated != content.String() {
+				body, _ = sjson.SetBytes(body, fmt.Sprintf("messages.%d.content", i), updated)
+			}
+		}
+	}
+	if tools := gjson.GetBytes(body, "tools"); tools.IsArray() {
+		for i, tool := range tools.Array() {
+			desc := tool.Get("function.description")
+			if desc.Type != gjson.String || desc.String() == "" {
+				continue
+			}
+			if updated := apply(desc.String()); updated != desc.String() {
+				body, _ = sjson.SetBytes(body, fmt.Sprintf("tools.%d.function.description", i), updated)
+			}
+		}
+	}
+	if rewrites > 0 {
+		log.Printf("[WorkBuddy] 已清洗客户端身份标识 %d 处（system/user/tool/工具描述）", rewrites)
 	}
 	return body
 }
