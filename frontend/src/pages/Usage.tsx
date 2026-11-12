@@ -336,6 +336,12 @@ function formatUsageAccountTitle(log: UsageLog): string {
   return accountEmail || accountName || (log.account_id > 0 ? `ID ${log.account_id}` : '-')
 }
 
+// 昵称列：只有凭据里带昵称的渠道（当前仅 WorkBuddy）才有值。
+// 其余渠道留空而不是显示占位符，避免整列被 "—" 填满、看不出信息密度差异。
+function formatUsageAccountNickname(log: UsageLog): string {
+  return log.account_nickname?.trim() || ''
+}
+
 function isImageUsageLog(log: UsageLog): boolean {
   const endpoint = log.inbound_endpoint || log.endpoint || ''
   return endpoint.includes('/images/') || log.model?.startsWith('gpt-image-') || (log.image_count ?? 0) > 0
@@ -1340,12 +1346,14 @@ function EmptyPanel({ accent, icon, text }: { accent: PanelAccentKey; icon: Reac
   )
 }
 
-type UsageTableColumn = 'status' | 'error' | 'model' | 'account' | 'apiKey' | 'clientIp' | 'userAgent' | 'endpoint' | 'type' | 'token' | 'cost' | 'cached' | 'wsAcquire' | 'tokensPerSec' | 'timing' | 'time'
+type UsageTableColumn = 'status' | 'error' | 'model' | 'account' | 'nickname' | 'apiKey' | 'clientIp' | 'userAgent' | 'endpoint' | 'type' | 'token' | 'cost' | 'cached' | 'wsAcquire' | 'tokensPerSec' | 'timing' | 'time'
 
 const USAGE_COLUMN_DEFINITIONS: Array<{ key: UsageTableColumn; labelKey: string }> = [
   { key: 'status', labelKey: 'usage.tableStatus' },
   { key: 'model', labelKey: 'usage.tableModel' },
   { key: 'account', labelKey: 'usage.tableAccount' },
+  // 昵称列紧跟来源账号：同一账号在账号管理页的显示名，WorkBuddy 渠道才有值
+  { key: 'nickname', labelKey: 'usage.tableNickname' },
   { key: 'apiKey', labelKey: 'usage.tableApiKey' },
   { key: 'clientIp', labelKey: 'usage.tableClientIP' },
   { key: 'userAgent', labelKey: 'usage.tableUserAgent' },
@@ -1371,6 +1379,8 @@ const DEFAULT_USAGE_VISIBLE_COLUMNS: Record<UsageTableColumn, boolean> = {
   error: true,
   model: true,
   account: true,
+  // 昵称只有 WorkBuddy 渠道有值，其余渠道显示空，默认开启不占额外宽度
+  nickname: true,
   apiKey: true,
   clientIp: true,
   userAgent: true,
@@ -2385,7 +2395,7 @@ export default function Usage() {
               <TooltipProvider>
               <div className="grid grid-cols-1 gap-3 lg:hidden">
                 {logs.map((log: UsageLog) => {
-                  const hasDetails = visibleColumns.account || visibleColumns.apiKey || visibleColumns.clientIp || visibleColumns.endpoint || visibleColumns.userAgent
+                  const hasDetails = visibleColumns.account || visibleColumns.nickname || visibleColumns.apiKey || visibleColumns.clientIp || visibleColumns.endpoint || visibleColumns.userAgent
                   const hasMetrics = visibleColumns.token || visibleColumns.cached || visibleColumns.timing || visibleColumns.tokensPerSec || visibleColumns.cost
                   return (
                     <div
@@ -2486,6 +2496,12 @@ export default function Usage() {
                                   {formatUsageAccountLabel(log)}
                                 </button>
                               ) : formatUsageAccountLabel(log)}
+                            </div>
+                          )}
+                          {visibleColumns.nickname && formatUsageAccountNickname(log) && (
+                            <div className="truncate" title={formatUsageAccountNickname(log)}>
+                              <span className="font-semibold text-foreground/80">{t('usage.tableNickname')}: </span>
+                              {formatUsageAccountNickname(log)}
                             </div>
                           )}
                           {visibleColumns.apiKey && (
@@ -2591,6 +2607,7 @@ export default function Usage() {
                       {visibleColumns.status && <TableHead className={usageTableHeadClass}>{t('usage.tableStatus')}</TableHead>}
                       {visibleColumns.model && <TableHead className={usageTableHeadClass}>{t('usage.tableModel')}</TableHead>}
                       {visibleColumns.account && <TableHead className={usageTableHeadClass}>{t('usage.tableAccount')}</TableHead>}
+                      {visibleColumns.nickname && <TableHead className={usageTableHeadClass}>{t('usage.tableNickname')}</TableHead>}
                       {visibleColumns.apiKey && <TableHead className={usageTableHeadClass}>{t('usage.tableApiKey')}</TableHead>}
                       {visibleColumns.clientIp && <TableHead className={usageTableHeadClass}>{t('usage.tableClientIP')}</TableHead>}
                       {visibleColumns.userAgent && <TableHead className={usageTableHeadClass}>{t('usage.tableUserAgent')}</TableHead>}
@@ -2711,6 +2728,11 @@ export default function Usage() {
                               {formatUsageAccountLabel(log)}
                             </span>
                           )}
+                        </TableCell>}
+                        {visibleColumns.nickname && <TableCell className={`${usageTableTextClass} text-muted-foreground`}>
+                          <span className="block max-w-[140px] truncate whitespace-nowrap" title={formatUsageAccountNickname(log)}>
+                            {formatUsageAccountNickname(log)}
+                          </span>
                         </TableCell>}
                         {visibleColumns.apiKey && <TableCell className={`${usageTableTextClass} text-muted-foreground`}>
                           <span className="block max-w-[180px] truncate whitespace-nowrap font-mono text-[12px]" title={formatUsageAPIKeyLabel(log.api_key_name, log.api_key_masked) || t('usage.unknownApiKey')}>

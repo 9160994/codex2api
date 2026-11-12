@@ -4386,6 +4386,8 @@ type UsageLog struct {
 	VideoSeconds           int       `json:"video_seconds"`
 	AccountName            string    `json:"account_name"`
 	AccountEmail           string    `json:"account_email"`
+	// AccountNickname 是账号显示昵称（当前仅 WorkBuddy 凭据提供）；空串表示该渠道没有昵称概念，前端不得渲染占位符。
+	AccountNickname        string    `json:"account_nickname,omitempty"`
 	CreatedAt              time.Time `json:"created_at"`
 	AccountBilled          float64   `json:"account_billed"`
 	UserBilled             float64   `json:"user_billed"`
@@ -5777,6 +5779,7 @@ func (db *DB) ListRecentUsageLogs(ctx context.Context, limit int) ([]*UsageLog, 
 			return nil, err
 		}
 		l.AccountEmail = accountEmailFromRawCredentials(credentialRaw)
+		l.AccountNickname = accountNicknameFromRawCredentials(credentialRaw)
 		l.UpstreamResponseModel = strings.TrimSpace(nullUpstreamResponseModel.String)
 		if nullUpstreamModelMismatch.Valid {
 			mismatch := nullUpstreamModelMismatch.Bool
@@ -6258,6 +6261,7 @@ func (db *DB) ListUsageLogsByTimeRange(ctx context.Context, start, end time.Time
 			return nil, err
 		}
 		l.AccountEmail = accountEmailFromRawCredentials(credentialRaw)
+		l.AccountNickname = accountNicknameFromRawCredentials(credentialRaw)
 		l.UpstreamResponseModel = strings.TrimSpace(nullUpstreamResponseModel.String)
 		if nullUpstreamModelMismatch.Valid {
 			mismatch := nullUpstreamModelMismatch.Bool
@@ -6761,6 +6765,7 @@ func (db *DB) ListUsageLogsByTimeRangePaged(ctx context.Context, f UsageLogFilte
 			return nil, err
 		}
 		l.AccountEmail = accountEmailFromRawCredentials(credentialRaw)
+		l.AccountNickname = accountNicknameFromRawCredentials(credentialRaw)
 		l.UpstreamResponseModel = strings.TrimSpace(nullUpstreamResponseModel.String)
 		if nullUpstreamModelMismatch.Valid {
 			mismatch := nullUpstreamModelMismatch.Bool
@@ -6820,6 +6825,7 @@ func (db *DB) ListUsageLogsByFilter(ctx context.Context, f UsageLogFilter) ([]*U
 			return nil, err
 		}
 		l.AccountEmail = accountEmailFromRawCredentials(credentialRaw)
+		l.AccountNickname = accountNicknameFromRawCredentials(credentialRaw)
 		l.UpstreamResponseModel = strings.TrimSpace(nullUpstreamResponseModel.String)
 		if nullUpstreamModelMismatch.Valid {
 			mismatch := nullUpstreamModelMismatch.Bool

@@ -389,6 +389,15 @@ func accountEmailFromRawCredentials(raw interface{}) string {
 	return credentialString(raw, "email")
 }
 
+// accountNicknameFromRawCredentials 从 accounts.credentials 里取账号昵称。
+//
+// 目前只有 WorkBuddy 账号带昵称，凭据键与 auth.WorkBuddyNicknameCredentialKey
+// 保持一致（database 不能反过来 import auth，会形成循环依赖，因此这里写字面量）。
+// 其余渠道没有这个键，返回空串，前端按「该渠道无昵称」处理而不是显示占位符。
+func accountNicknameFromRawCredentials(raw interface{}) string {
+	return strings.TrimSpace(credentialString(raw, "workbuddy_nickname"))
+}
+
 func (db *DB) isSQLite() bool {
 	return db != nil && db.driver == "sqlite"
 }

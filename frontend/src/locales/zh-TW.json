@@ -1815,6 +1815,7 @@
     "featureOverlapHint": "各項可重疊，占比依總請求計算",
     "requestShare": "請求占比",
     "tableCached": "快取",
+    "tableNickname": "暱稱",
     "cacheReadTooltip": "讀取快取：{{tokens}}",
     "cacheCreateTooltip": "建立快取：{{tokens}}（5 分鐘 {{m5}} · 1 小時 {{h1}}）",
     "claudeInputTooltip": "未快取輸入：{{input}}；總輸入：{{total}}（含讀取快取 {{read}}、建立快取 {{write}}）",

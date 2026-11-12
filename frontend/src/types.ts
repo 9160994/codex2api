@@ -3777,6 +3777,8 @@ export interface UsageLog {
   image_size: string
   account_name: string
   account_email: string
+  /** 账号昵称（当前仅 WorkBuddy 渠道提供）。缺省表示该渠道无昵称概念。 */
+  account_nickname?: string
   created_at: ISODateString
   account_billed: number
   user_billed: number

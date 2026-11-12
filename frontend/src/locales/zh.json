@@ -2836,6 +2836,7 @@
     "tableError": "错误摘要",
     "tableModel": "模型",
     "tableAccount": "来源账号",
+    "tableNickname": "昵称",
     "tableApiKey": "API 密钥",
     "tableClientIP": "IP",
     "tableUserAgent": "User-Agent",
