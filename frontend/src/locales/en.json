@@ -3025,7 +3025,12 @@
     "videoSettlesOnDone": "Settles on completion",
     "mediaUnpricedHint": "This media model has no upstream unit cost; set one on the model pricing page",
     "internalIntelligenceCheck": "Intelligence check",
-    "internalIntelligenceCheckTooltip": "Internal request using saved intelligence check settings"
+    "internalIntelligenceCheckTooltip": "Internal request using saved intelligence check settings",
+    "accountStatsTitle": "By account",
+    "accountStatsDesc": "Requests, tokens, spend and average latency per upstream account in this range",
+    "accountStatsBilled": "Spend",
+    "accountStatsAvgLatency": "Avg",
+    "noAccountStats": "No per-account data in this range yet"
   },
   "promptFilter": {
     "title": "Prompt Filter",

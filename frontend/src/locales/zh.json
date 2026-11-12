@@ -3025,7 +3025,12 @@
     "videoSettlesOnDone": "完成时结算",
     "mediaUnpricedHint": "该媒体模型没有上游单位成本，请到模型定价页补填",
     "internalIntelligenceCheck": "降智检测",
-    "internalIntelligenceCheckTooltip": "使用已保存检测配置发起的内部请求"
+    "internalIntelligenceCheckTooltip": "使用已保存检测配置发起的内部请求",
+    "accountStatsTitle": "按账号",
+    "accountStatsDesc": "各上游账号在本区间的请求、Token、计费与平均耗时",
+    "accountStatsBilled": "计费",
+    "accountStatsAvgLatency": "均耗时",
+    "noAccountStats": "本区间还没有账号维度的数据"
   },
   "promptFilter": {
     "title": "Prompt 检查",

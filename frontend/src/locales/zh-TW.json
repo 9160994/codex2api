@@ -1862,7 +1862,12 @@
     "mediaUnitsImage": "{{count}} 張圖片",
     "mediaUnitsVideo": "{{count}} 秒影片",
     "videoSettlesOnDone": "完成時結算",
-    "mediaUnpricedHint": "此媒體模型沒有上游單位成本，請到模型定價頁補填"
+    "mediaUnpricedHint": "此媒體模型沒有上游單位成本，請到模型定價頁補填",
+    "accountStatsTitle": "按帳號",
+    "accountStatsDesc": "各上游帳號在本區間的請求、Token、計費與平均耗時",
+    "accountStatsBilled": "計費",
+    "accountStatsAvgLatency": "均耗時",
+    "noAccountStats": "本區間還沒有帳號維度的資料"
   },
   "proxies": {
     "idle": "空閒",

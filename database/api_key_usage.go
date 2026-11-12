@@ -1357,3 +1357,97 @@ func (db *DB) listAPIKeySelfRecentLogs(ctx context.Context, apiKeyID int64, rang
 	}
 	return items, total, page, pageSize, nil
 }
+
+// UsageAccountStat 是「使用统计」页按上游账号聚合的区间用量：
+// 请求数、Token、计费、错误数、平均耗时，附带账号名/邮箱/昵称用于展示。
+type UsageAccountStat struct {
+	AccountID     int64   `json:"account_id"`
+	AccountName   string  `json:"account_name"`
+	AccountEmail  string  `json:"account_email"`
+	Nickname      string  `json:"nickname,omitempty"`
+	Requests      int64   `json:"requests"`
+	InputTokens   int64   `json:"input_tokens"`
+	OutputTokens  int64   `json:"output_tokens"`
+	CachedTokens  int64   `json:"cached_tokens"`
+	TotalTokens   int64   `json:"total_tokens"`
+	ErrorCount    int64   `json:"error_count"`
+	AccountBilled float64 `json:"account_billed"`
+	UserBilled    float64 `json:"user_billed"`
+	AvgDurationMs float64 `json:"avg_duration_ms"`
+}
+
+// ListUsageAccountStats 返回 [rangeStart, rangeEnd) 内按上游账号聚合的用量，
+// 支持渠道过滤与用量页同款维度筛选(channel/dim)，供「按账号」区块使用。
+// 只统计成功写入的明细行(排除 499 与内部请求)，与区间卡片的统计口径一致。
+func (db *DB) ListUsageAccountStats(ctx context.Context, rangeStart, rangeEnd time.Time, channel string, dim UsageLogFilter) ([]UsageAccountStat, error) {
+	now := time.Now()
+	if rangeStart.IsZero() {
+		rangeStart = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	}
+	where := `u.status_code <> 499 AND TRIM(COALESCE(u.internal_reason, '')) = '' AND u.created_at >= $1`
+	args := []interface{}{db.timeArg(rangeStart)}
+	if !rangeEnd.IsZero() {
+		where += fmt.Sprintf(" AND u.created_at < $%d", len(args)+1)
+		args = append(args, db.timeArg(rangeEnd))
+	}
+	where, args = usageStatsFilterWhere(where, args, channel, dim)
+
+	query := `
+		WITH aggregated AS (
+			SELECT
+				u.account_id AS account_id,
+				COUNT(*) AS requests,
+				COALESCE(SUM(u.input_tokens), 0) AS input_tokens,
+				COALESCE(SUM(u.output_tokens), 0) AS output_tokens,
+				COALESCE(SUM(u.cached_tokens), 0) AS cached_tokens,
+				COALESCE(SUM(u.total_tokens), 0) AS total_tokens,
+				COALESCE(SUM(CASE WHEN u.status_code >= 400 THEN 1 ELSE 0 END), 0) AS error_count,
+				COALESCE(SUM(u.account_billed), 0) AS account_billed,
+				COALESCE(SUM(u.user_billed), 0) AS user_billed,
+				COALESCE(SUM(u.duration_ms), 0) AS duration_sum,
+				COUNT(u.duration_ms) AS duration_rows
+			FROM usage_logs u
+			WHERE ` + where + `
+			GROUP BY 1
+		)
+		SELECT
+			agg.account_id,
+			COALESCE(a.name, '') AS account_name,
+			COALESCE(CAST(a.credentials AS TEXT), '{}') AS credentials,
+			agg.requests, agg.input_tokens, agg.output_tokens, agg.cached_tokens, agg.total_tokens,
+			agg.error_count, agg.account_billed, agg.user_billed, agg.duration_sum, agg.duration_rows
+		FROM aggregated agg
+		LEFT JOIN accounts a ON agg.account_id = a.id
+		ORDER BY agg.requests DESC, agg.total_tokens DESC`
+
+	rows, err := db.conn.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	items := make([]UsageAccountStat, 0, 8)
+	for rows.Next() {
+		var item UsageAccountStat
+		var credentials string
+		var durationSum int64
+		var durationRows int64
+		if err := rows.Scan(
+			&item.AccountID, &item.AccountName, &credentials,
+			&item.Requests, &item.InputTokens, &item.OutputTokens, &item.CachedTokens, &item.TotalTokens,
+			&item.ErrorCount, &item.AccountBilled, &item.UserBilled, &durationSum, &durationRows,
+		); err != nil {
+			return nil, err
+		}
+		item.AccountEmail = emailFromCredentialsJSON(credentials)
+		item.Nickname = credentialString(credentials, "workbuddy_nickname")
+		if durationRows > 0 {
+			item.AvgDurationMs = float64(durationSum) / float64(durationRows)
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}

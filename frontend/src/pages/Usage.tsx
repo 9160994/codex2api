@@ -22,7 +22,7 @@ import { useDataLoader } from '../hooks/useDataLoader'
 import { useConfirmDialog } from '../hooks/useConfirmDialog'
 import { useToast } from '../hooks/useToast'
 import { DEFAULT_PAGE_SIZE_OPTIONS, usePersistedPageSize } from '../hooks/usePersistedPageSize'
-import type { APIKeyRow, OpsErrorSummary, SystemSettings, UsageAPIKeyStat, UsageEndpointStat, UsageFeatureStats, UsageLog, UsageModelStat, UsageStats, PromptFilterLog, PromptPolicyIncidentDetailResponse } from '../types'
+import type { APIKeyRow, OpsErrorSummary, SystemSettings, UsageAccountStat, UsageAPIKeyStat, UsageEndpointStat, UsageFeatureStats, UsageLog, UsageModelStat, UsageStats, PromptFilterLog, PromptPolicyIncidentDetailResponse } from '../types'
 import { cn, formatCompactEmail } from '../lib/utils'
 import { formatUsageNumber as formatTokens } from '../lib/usageFormat'
 import { buildModelShareData, formatSharePercent, type ModelShareMetric } from '../lib/usageInsights'
@@ -40,7 +40,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table'
-import { Activity, Box, Clock, Zap, Sparkles, AlertTriangle, Search, Brain, DatabaseZap, X, Image as ImageIcon, Info, CircleDollarSign, BarChart3, KeyRound, Route, SlidersHorizontal, ShieldAlert, RefreshCw, ChevronDown, RotateCcw, PlugZap, FlaskConical } from 'lucide-react'
+import { Activity, Box, Clock, Zap, Sparkles, AlertTriangle, Search, Brain, DatabaseZap, X, Image as ImageIcon, Info, CircleDollarSign, BarChart3, KeyRound, Route, SlidersHorizontal, ShieldAlert, RefreshCw, ChevronDown, RotateCcw, PlugZap, FlaskConical, Users } from 'lucide-react'
 
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
@@ -801,6 +801,80 @@ function APIKeyStatsPanel({
   )
 }
 
+function AccountStatsPanel({
+  stats,
+  totalRequests,
+  showFullUsageNumbers,
+}: {
+  stats: UsageAccountStat[]
+  totalRequests: number
+  showFullUsageNumbers: boolean
+}) {
+  const { t } = useTranslation()
+  const visible = stats.slice(0, 6)
+  const label = (item: UsageAccountStat) => {
+    const nick = (item.nickname || '').trim()
+    const name = (item.account_name || '').trim() || (item.account_email || '').trim() || (item.account_id > 0 ? `ID ${item.account_id}` : 'unknown')
+    return nick ? `${nick} · ${name}` : name
+  }
+  return (
+    <PanelShell>
+      <PanelHeader
+        accent="violet"
+        icon={<Users />}
+        title={t('usage.accountStatsTitle')}
+        description={t('usage.accountStatsDesc')}
+        trailing={<span className="usage-panel-badge">{t('usage.requestShare')}</span>}
+      />
+      {visible.length === 0 ? (
+        <EmptyPanel accent="violet" icon={<Users />} text={t('usage.noAccountStats')} />
+      ) : (
+        <div className="usage-distribution-list">
+          {visible.map((item, index) => (
+            <div key={`${item.account_id}-${item.account_name}`} className="usage-distribution-row">
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex min-w-0 items-start gap-2.5">
+                  <RankBadge accent="violet" rank={index + 1} />
+                  <div className="min-w-0">
+                    <div className="truncate text-sm font-semibold leading-tight tracking-tight text-foreground" title={label(item)}>
+                      {label(item)}
+                    </div>
+                    <div className="mt-0.5 flex flex-wrap items-center gap-x-2.5 gap-y-0.5 text-[11px] text-muted-foreground">
+                      <span className="tabular-nums">{t('usage.modelStatsRequests')} {formatTokens(item.requests, showFullUsageNumbers)}</span>
+                      <span aria-hidden="true" className="text-border">·</span>
+                      <span className="tabular-nums">{t('usage.modelStatsTokens')} {formatTokens(item.total_tokens, showFullUsageNumbers)}</span>
+                      <span aria-hidden="true" className="text-border">·</span>
+                      <span className="tabular-nums">{t('usage.accountStatsBilled')} {formatCostCardValue(item.account_billed)}</span>
+                      {item.avg_duration_ms > 0 && (
+                        <>
+                          <span aria-hidden="true" className="text-border">·</span>
+                          <span className="tabular-nums">{t('usage.accountStatsAvgLatency')} {(item.avg_duration_ms / 1000).toFixed(1)}s</span>
+                        </>
+                      )}
+                      {item.error_count > 0 && (
+                        <>
+                          <span aria-hidden="true" className="text-border">·</span>
+                          <span className="tabular-nums text-amber-600 dark:text-amber-400">{t('usage.modelStatsErrors')} {formatTokens(item.error_count, showFullUsageNumbers)}</span>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                </div>
+                <span className="ml-1 inline-block min-w-[3.25rem] shrink-0 text-right font-geist-mono text-[13px] font-semibold tabular-nums tracking-tight text-foreground">
+                  {formatSharePercent(totalRequests > 0 ? safeNumber(item.requests) / totalRequests * 100 : 0)}
+                </span>
+              </div>
+              <div className="pl-[30px]">
+                <AccentBar accent="violet" ratio={totalRequests > 0 ? safeNumber(item.requests) / totalRequests : 0} />
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </PanelShell>
+  )
+}
+
 function DistributionPanel({
   accent,
   title,
@@ -1547,19 +1621,23 @@ export default function Usage() {
 
   const loadStats = useCallback(async () => {
     const version = statsFiltersVersionRef.current
-    const [stats, settings] = await Promise.all([
+    const [stats, settings, accountStats] = await Promise.all([
       api.getUsageStats(statsFilterParamsRef.current()),
       api.getSettings().catch((): SystemSettings | null => null),
+      api.getUsageAccountStats(statsFilterParamsRef.current())
+        .then((res) => res.items)
+        .catch((): UsageAccountStat[] => []),
     ])
-    return { stats, settings, version }
+    return { stats, settings, accountStats, version }
   }, [])
 
   const { data, loading, error, reload, reloadSilently } = useDataLoader<{
     stats: UsageStats | null
     settings: SystemSettings | null
+    accountStats: UsageAccountStat[]
     version: number
   }>({
-    initialData: { stats: null, settings: null, version: 0 },
+    initialData: { stats: null, settings: null, accountStats: [], version: 0 },
     load: loadStats,
     onError: setStatsLoadError,
   })
@@ -1669,6 +1747,7 @@ export default function Usage() {
   }, [showAnalysis])
 
   const { stats, settings } = data
+  const accountStats = data.accountStats ?? []
   // 卡片还停留在上一组筛选的结果上:加载中先压暗,加载失败(慢库超时等)就遮住旧数字,
   // 不能让旧区间的数字顶着新区间的标签显示。
   const statsOutdated = data.version !== statsFiltersVersion
@@ -1992,6 +2071,7 @@ export default function Usage() {
             <FeatureStatsPanel stats={featureStats} totalRequests={rangeRequests} showFullUsageNumbers={showFullUsageNumbers} />
             <EndpointStatsPanel stats={endpointStats} totalRequests={rangeRequests} showFullUsageNumbers={showFullUsageNumbers} />
             <APIKeyStatsPanel stats={apiKeyStats} totalRequests={rangeRequests} showFullUsageNumbers={showFullUsageNumbers} />
+            <AccountStatsPanel stats={accountStats} totalRequests={rangeRequests} showFullUsageNumbers={showFullUsageNumbers} />
           </section>
         )}
         </div>

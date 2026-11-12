@@ -154,6 +154,7 @@ import type {
   UsageLogsResponse,
   UsageLogsPagedResponse,
   UsageStats,
+  UsageAccountStat,
   AccountGroup,
   AccountRow,
   AccountGroupsResponse,
@@ -1261,6 +1262,21 @@ export const api = {
     return request<UsageStats>(qs ? `/usage/stats?${qs}` : '/usage/stats', {
       signal: params.signal,
     })
+  },
+  // 使用统计 → 按账号：与 getUsageStats 同一套维度筛选参数，返回每个上游账号的聚合用量。
+  getUsageAccountStats: (params: Partial<Omit<UsageLogQueryParams, 'start' | 'end'>> & {
+    start?: string
+    end?: string
+    signal?: AbortSignal
+  } = {}) => {
+    const searchParams = buildUsageLogSearchParams({ ...params, start: params.start ?? '', end: params.end ?? '' })
+    if (!params.start) searchParams.delete('start')
+    if (!params.end) searchParams.delete('end')
+    const qs = searchParams.toString()
+    return request<{ items: UsageAccountStat[] }>(
+      qs ? `/usage/stats/accounts?${qs}` : '/usage/stats/accounts',
+      { signal: params.signal },
+    )
   },
   getAPIKeyTokenStats: (params: { start?: string; end?: string; signal?: AbortSignal } = {}) => {
     const searchParams = new URLSearchParams()

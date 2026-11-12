@@ -3696,6 +3696,24 @@ export interface APIKeyAccountStatsResponse {
   membership_basis: 'current_and_deleted_last_membership'
 }
 
+// UsageAccountStat 是「使用统计 → 按账号」区块的聚合项：区间内某上游账号的
+// 请求数、Token、计费、错误数与平均耗时；nickname 仅 WorkBuddy 等带昵称的渠道有值。
+export interface UsageAccountStat {
+  account_id: number
+  account_name: string
+  account_email: string
+  nickname?: string
+  requests: number
+  input_tokens: number
+  output_tokens: number
+  cached_tokens: number
+  total_tokens: number
+  error_count: number
+  account_billed: number
+  user_billed: number
+  avg_duration_ms: number
+}
+
 export type UserBillingMode = 'token' | 'per_image' | 'per_video' | 'per_second'
 
 export interface UsageLog {

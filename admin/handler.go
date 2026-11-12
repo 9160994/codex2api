@@ -1286,6 +1286,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.GET("/accounts/event-trend", h.GetAccountEventTrend)
 	api.POST("/accounts/usage/probe", h.ForceUsageProbe)
 	api.GET("/usage/stats", h.GetUsageStats)
+	api.GET("/usage/stats/accounts", h.GetUsageAccountStats)
 	api.GET("/usage/api-keys", h.GetAPIKeyTokenStats)
 	api.GET("/usage/api-keys/:id/accounts", h.GetAPIKeyAccountStats)
 	api.GET("/usage/logs", h.GetUsageLogs)
@@ -7597,6 +7598,32 @@ func (h *Handler) GetHealth(c *gin.Context) {
 
 // GetUsageStats 获取使用统计。
 // 支持可选 query 参数 start/end (RFC3339);未传时回落"今日"行为。
+// GetUsageAccountStats 返回「使用统计 → 按账号」的聚合数据：
+// 与 /usage/stats 共用时间范围、渠道与维度筛选，按上游账号分组给出
+// 请求数、Token、计费、错误数与平均耗时，并带上账号昵称（WorkBuddy 等渠道有值）。
+//
+// GET /api/admin/usage/stats/accounts
+func (h *Handler) GetUsageAccountStats(c *gin.Context) {
+	ctx, cancel := context.WithTimeout(c.Request.Context(), 15*time.Second)
+	defer cancel()
+
+	rangeStart, rangeEnd, err := parseUsageStatsRange(c.Query("start"), c.Query("end"))
+	if err != nil {
+		writeError(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	dim, ok := parseUsageLogsFilter(c, rangeStart, rangeEnd)
+	if !ok {
+		return
+	}
+	items, err := h.db.ListUsageAccountStats(ctx, rangeStart, rangeEnd, parseUsageChannel(c), dim)
+	if err != nil {
+		writeInternalError(c, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"items": items})
+}
+
 func (h *Handler) GetUsageStats(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 15*time.Second)
 	defer cancel()
