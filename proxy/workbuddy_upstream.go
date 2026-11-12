@@ -247,8 +247,17 @@ func neutralizeWorkBuddyBlockedSignature(body []byte) []byte {
 		return updated
 	}
 
+	// 只清洗「客户端自己生成」的部分：system/developer 消息与工具描述。
+	// user / assistant / tool 里的正文是用户本人写的内容（也可能在讨论
+	// DeepSeek Harness 这个名字），一律原样透传，否则会改掉用户的话。
+	// 需要连用户正文一起清洗时设 WORKBUDDY_SCRUB_ALL_MESSAGES=1。
+	scrubAll := strings.EqualFold(strings.TrimSpace(os.Getenv("WORKBUDDY_SCRUB_ALL_MESSAGES")), "1")
 	if msgs := gjson.GetBytes(body, "messages"); msgs.IsArray() {
 		for i, msg := range msgs.Array() {
+			role := strings.ToLower(strings.TrimSpace(msg.Get("role").String()))
+			if !scrubAll && role != "system" && role != "developer" {
+				continue
+			}
 			content := msg.Get("content")
 			if content.Type != gjson.String || content.String() == "" {
 				continue
@@ -270,7 +279,7 @@ func neutralizeWorkBuddyBlockedSignature(body []byte) []byte {
 		}
 	}
 	if rewrites > 0 {
-		log.Printf("[WorkBuddy] 已清洗客户端身份标识 %d 处（system/user/tool/工具描述）", rewrites)
+		log.Printf("[WorkBuddy] 已清洗客户端身份标识 %d 处（system/developer 消息 + 工具描述）", rewrites)
 	}
 	return body
 }
