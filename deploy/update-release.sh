@@ -50,13 +50,21 @@ downloaded=0
 for prefix in "${MIRRORS[@]}"; do
   url="${prefix}${PATH_PART}"
   echo "    尝试下载：${prefix:-直连 GitHub}"
-  if curl -fsSL --max-time 900 --speed-limit 150000 --speed-time 10        -o "$tmp/$ASSET" "$url"; then
+  if curl -fsSL -C - --max-time 900 --speed-limit 50000 --speed-time 15        -o "$tmp/$ASSET" "$url"; then
     downloaded=1
     echo "    下载完成：$(du -h "$tmp/$ASSET" | cut -f1)（来源 ${prefix:-直连}）"
     break
   fi
   echo "    该来源过慢或失败，换下一个"
 done
+if [ "$downloaded" != "1" ]; then
+  # 最后兜底：不限速慢慢拉直连，宁可慢也不让更新失败（24MB 最坏几分钟）
+  echo "    各镜像都不理想，改用直连不限速续传（可能较慢）"
+  if curl -fsSL -C - --max-time 1800 -o "$tmp/$ASSET" "${PATH_PART}"; then
+    downloaded=1
+    echo "    下载完成：$(du -h "$tmp/$ASSET" | cut -f1)（直连）"
+  fi
+fi
 if [ "$downloaded" != "1" ]; then
   echo "    所有下载源都失败，终止（未改动服务）"
   exit 1
