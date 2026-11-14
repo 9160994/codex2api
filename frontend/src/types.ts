@@ -1444,6 +1444,43 @@ export interface WorkBuddyModelsResponse {
   errors?: string[]
 }
 
+// ---------- WorkBuddy 每日签到 ----------
+// 契约：POST /api/admin/accounts/workbuddy/checkin（body {ids?}）→ {summary, items}
+export interface WorkBuddyCheckinSummary {
+  total: number
+  checked: number
+  already: number
+  failed: number
+  started_at: string
+  finished_at?: string
+  /** auto = 后台定时器触发；manual = 用户点击触发 */
+  trigger: 'auto' | 'manual'
+  errors?: string[]
+}
+
+export interface WorkBuddyCheckinItem {
+  account_id: number
+  uid: string
+  nickname: string
+  /** checked = 本次签到成功；already = 今天已签过；failed = 失败 */
+  status: 'checked' | 'already' | 'failed'
+  message?: string
+}
+
+export interface WorkBuddyCheckinResponse {
+  summary: WorkBuddyCheckinSummary
+  items: WorkBuddyCheckinItem[]
+}
+
+export interface WorkBuddyCheckinStatusResponse {
+  /** 每日自动签到的目标小时（本地时区） */
+  hour: number
+  /** 最近一次自动签到执行的日期（yyyy-mm-dd），空表示还没跑过 */
+  last_auto_day: string
+  last_run_at?: string
+  last_result?: WorkBuddyCheckinSummary
+}
+
 export interface AntigravityOAuthStartRequest {
   name?: string
   proxy_url?: string

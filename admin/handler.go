@@ -95,6 +95,10 @@ type Handler struct {
 	patWhoAmIFailedAt          map[int64]time.Time
 	whamDailySyncedOnce        map[int64]struct{}
 	whamDailyDeepSynced        map[int64]whamDailyDeepState
+	// workBuddyCheckinMu/workBuddyCheckinSt 承载 WorkBuddy 每日签到定时器的运行态。
+	// 惰性初始化：定时器未启动时也不影响手动签到接口。
+	workBuddyCheckinMu         sync.Mutex
+	workBuddyCheckinSt         *workBuddyCheckinState
 	recordAccountEvent         func(int64, string, string)
 	proxyProbe                 func(context.Context, string, string) proxyProbeResult
 	reloadProxyPoolFn          func() error
@@ -1189,6 +1193,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	api.POST("/accounts/workbuddy/import", h.ImportWorkBuddyAccounts)
 	api.POST("/accounts/workbuddy/delete", h.DeleteWorkBuddyAccounts)
 	api.POST("/accounts/workbuddy/models", h.FetchWorkBuddyModels)
+	// 每日签到：POST 手动触发（body 可选 {ids:[...]}，省略即全部），GET 查自动签到运行态
+	api.POST("/accounts/workbuddy/checkin", h.CheckinWorkBuddyAccounts)
+	api.GET("/accounts/workbuddy/checkin/status", h.GetWorkBuddyCheckinStatus)
 	api.PATCH("/accounts/:id/workbuddy", h.UpdateWorkBuddyAccount)
 	api.POST("/accounts/:id/workbuddy/test", h.TestWorkBuddyAccount)
 	api.POST("/accounts/:id/workbuddy/refresh", h.RefreshWorkBuddyAccessToken)

@@ -2,6 +2,7 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import {
+  CalendarCheck,
   FlaskConical,
   Loader2,
   Pencil,
@@ -103,6 +104,7 @@ function WorkBuddyAccounts({ headerSlot }: { headerSlot?: ReactNode } = {}) {
   const [selected, setSelected] = useState<Set<number>>(() => new Set());
   const [busy, setBusy] = useState<{ id: number; action: RowAction } | null>(null);
   const [batchBusy, setBatchBusy] = useState(false);
+  const [checkinBusy, setCheckinBusy] = useState(false);
 
   const [proxies, setProxies] = useState<ProxyRow[]>([]);
   const [showAdd, setShowAdd] = useState(false);
@@ -270,8 +272,29 @@ function WorkBuddyAccounts({ headerSlot }: { headerSlot?: ReactNode } = {}) {
     }
   };
 
-  const handleDelete = async (ids: number[]) => {
-    if (ids.length === 0) return;
+  // 签到：ids 为空表示全部。签到是幂等操作，已签到的账号会返回 already 而不是报错。
+  const handleCheckin = async (ids: number[]) => {
+    if (checkinBusy) return;
+    setCheckinBusy(true);
+    try {
+      const result = await api.checkinWorkBuddyAccounts(ids.length > 0 ? ids : undefined);
+      const { summary } = result;
+      // 失败详情拼进提示：签到失败多半是 token 失效，用户需要看到具体原因。
+      const detail = (summary.errors ?? []).slice(0, 3).join('；');
+      const message = t('workbuddy.checkinResult', {
+        checked: summary.checked,
+        already: summary.already,
+        failed: summary.failed,
+      });
+      showToast(detail ? `${message} — ${detail}` : message, summary.failed > 0 ? 'error' : 'success');
+    } catch (checkinError) {
+      showToast(getErrorMessage(checkinError), 'error');
+    } finally {
+      setCheckinBusy(false);
+    }
+  };
+
+  const handleDelete = async (ids: number[]) => {    if (ids.length === 0) return;
     const confirmed = await confirm({
       title: t("workbuddy.deleteTitle"),
       description: t("workbuddy.deleteDesc", { count: ids.length }),
@@ -345,6 +368,18 @@ function WorkBuddyAccounts({ headerSlot }: { headerSlot?: ReactNode } = {}) {
               <Button variant="outline" size="sm" onClick={() => setShowImport(true)}>
                 <Upload className="size-3.5" />
                 <span className="hidden sm:inline">{t("workbuddy.importTitle")}</span>
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                title={t("workbuddy.checkinAllHint")}
+                disabled={checkinBusy || accounts.length === 0}
+                onClick={() => void handleCheckin(selected.size > 0 ? Array.from(selected) : [])}
+              >
+                {checkinBusy ? <Loader2 className="size-3.5 animate-spin" /> : <CalendarCheck className="size-3.5" />}
+                <span className="hidden sm:inline">
+                  {selected.size > 0 ? t("workbuddy.checkinSelected") : t("workbuddy.checkinAll")}
+                </span>
               </Button>
               {selected.size > 0 ? (
                 <Button
@@ -491,6 +526,7 @@ function WorkBuddyAccounts({ headerSlot }: { headerSlot?: ReactNode } = {}) {
                       busyAction={rowBusyAction(account.id)}
                       onToggleSelect={() => toggleSelect(account.id)}
                       onToggleEnabled={() => void handleToggleEnabled(account)}
+                      onCheckin={() => void handleCheckin([account.id])}
                       onTest={() => void handleTest(account)}
                       onRefresh={() => void handleRefreshToken(account)}
                       onEdit={() => setEditAccount(account)}
@@ -540,6 +576,7 @@ const WorkBuddyRow = memo(function WorkBuddyRow({
   busyAction,
   onToggleSelect,
   onToggleEnabled,
+  onCheckin,
   onTest,
   onRefresh,
   onEdit,
@@ -550,6 +587,7 @@ const WorkBuddyRow = memo(function WorkBuddyRow({
   busyAction: RowAction | null;
   onToggleSelect: () => void;
   onToggleEnabled: () => void;
+  onCheckin: () => void;
   onTest: () => void;
   onRefresh: () => void;
   onEdit: () => void;
@@ -657,6 +695,16 @@ const WorkBuddyRow = memo(function WorkBuddyRow({
       </TableCell>
       <TableCell className="text-right">
         <div className="inline-flex items-center gap-0.5">
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            title={t("workbuddy.checkinAction")}
+            aria-label={t("workbuddy.checkinAction")}
+            disabled={busyAction !== null}
+            onClick={onCheckin}
+          >
+            <CalendarCheck className="size-3.5" />
+          </Button>
           <Button
             variant="ghost"
             size="icon-sm"

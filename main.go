@@ -432,6 +432,8 @@ func main() {
 	adminHandler.StartGrokStatusProbe(backgroundCtx)
 	// 官方结算用量按天快照：上游只保留 7 天，不落库就永久丢失，长期历史全靠这个任务。
 	adminHandler.StartWhamDailyUsageProbe(backgroundCtx)
+	// WorkBuddy 每日签到：每天本地时间 10:00 后自动跑一轮（已过点未跑则立即补签）。
+	adminHandler.StartWorkBuddyDailyCheckin(backgroundCtx)
 	// 官方模型价目轮询默认关闭；启用后只在网络解析完成后做一次短数据库写入。
 	adminHandler.StartOfficialPricingSync(backgroundCtx)
 	// Prompt 审核日志保留清理：默认保留 7 天，每小时分批清理过期行，CY 关联行不动。

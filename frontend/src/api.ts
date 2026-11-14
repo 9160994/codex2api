@@ -48,6 +48,8 @@ import type {
   UpdateWorkBuddyAccountRequest,
   WorkBuddyAccountsResponse,
   WorkBuddyCreateResponse,
+  WorkBuddyCheckinResponse,
+  WorkBuddyCheckinStatusResponse,
   WorkBuddyDeleteResponse,
   WorkBuddyImportRequest,
   WorkBuddyImportResponse,
@@ -796,6 +798,15 @@ export const api = {
       body: JSON.stringify(ids && ids.length > 0 ? { ids } : {}),
       timeoutMs: 60_000,
     }),
+  // 每日签到：ids 省略表示全部可签到账号。账号多时整体耗时可达数分钟。
+  checkinWorkBuddyAccounts: (ids?: number[]) =>
+    request<WorkBuddyCheckinResponse>('/accounts/workbuddy/checkin', {
+      method: 'POST',
+      body: JSON.stringify(ids && ids.length > 0 ? { ids } : {}),
+      timeoutMs: 600_000,
+    }),
+  getWorkBuddyCheckinStatus: () =>
+    request<WorkBuddyCheckinStatusResponse>('/accounts/workbuddy/checkin/status'),
   fetchAntigravityModels: (data: AddAntigravityAccountRequest) =>
     request<{ models: string[] }>('/accounts/antigravity/models', {
       method: 'POST',
