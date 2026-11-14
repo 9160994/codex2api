@@ -1357,6 +1357,18 @@ export interface WorkBuddyAccount {
   last_error: string
   /** 列表接口会带出绑定的代理地址，用于编辑弹窗回填。 */
   proxy_url?: string
+  /** 剩余积分（各积分包 CapacityRemain 之和）。 */
+  credit_remain: number
+  /** 总积分（上游 TotalDosage）。 */
+  credit_total: number
+  /** false = 上游查询失败或未取到，UI 显示「—」而不是 0/0。 */
+  credit_known: boolean
+  /** 「已签到」/「未签到」 */
+  checkin_state: string
+  /** false = 状态未知 */
+  checkin_known: boolean
+  /** 最近一次成功签到的日期（yyyy-mm-dd），空表示从未签到 */
+  checkin_date?: string
 }
 
 export interface WorkBuddyAccountsResponse {

@@ -70,6 +70,22 @@ function expiryTone(state: WorkBuddyExpiryState): string {
 
 const EXPIRY_CLASS = "whitespace-nowrap text-[12px]";
 
+// 积分显示：大数字加千分位，避免 37520 这种读不出量级。
+function formatCredit(value: number): string {
+  const n = Number.isFinite(value) ? value : 0;
+  return n.toLocaleString("en-US");
+}
+
+// 剩余积分的着色：额度见底时标红提醒，充裕时保持中性。
+// 用「剩余 < 10% 总额」作为告警线——上游积分按包发放，绝对阈值在不同账号上不可比。
+function creditToneClass(remain: number, total: number): string {
+  if (total <= 0) return "text-muted-foreground";
+  const ratio = remain / total;
+  if (ratio <= 0.1) return "text-destructive";
+  if (ratio <= 0.3) return "text-amber-600 dark:text-amber-400";
+  return "text-foreground";
+}
+
 /**
  * WorkBuddy(wb2api) 账号页：与 Codex/Grok/Antigravity/Claude 账号页并列的第五个上游视图。
  *
@@ -510,6 +526,8 @@ function WorkBuddyAccounts({ headerSlot }: { headerSlot?: ReactNode } = {}) {
                     <TableHead className="text-[13px] font-semibold">{t("workbuddy.colAccount")}</TableHead>
                     <TableHead className="text-[13px] font-semibold">{t("workbuddy.colUid")}</TableHead>
                     <TableHead className="text-[13px] font-semibold">{t("workbuddy.colNickname")}</TableHead>
+                    <TableHead className="text-[13px] font-semibold">{t("workbuddy.colCredit")}</TableHead>
+                    <TableHead className="text-[13px] font-semibold">{t("workbuddy.colCheckin")}</TableHead>
                     <TableHead className="text-[13px] font-semibold">{t("workbuddy.colRealm")}</TableHead>
                     <TableHead className="text-[13px] font-semibold">{t("workbuddy.colStatus")}</TableHead>
                     <TableHead className="text-[13px] font-semibold">{t("workbuddy.colModels")}</TableHead>
@@ -637,6 +655,40 @@ const WorkBuddyRow = memo(function WorkBuddyRow({
       <TableCell>
         <span className="max-w-[140px] truncate text-[12px] text-muted-foreground" title={account.nickname}>
           {account.nickname || "—"}
+        </span>
+      </TableCell>
+      <TableCell>
+        {/* 剩余/总额：未知时显示「—」，避免 0/0 被误读成额度耗尽 */}
+        {account.credit_known ? (
+          <span
+            className={cn(
+              "whitespace-nowrap font-mono text-[12px] tabular-nums",
+              creditToneClass(account.credit_remain, account.credit_total),
+            )}
+            title={t("workbuddy.creditHint", {
+              remain: account.credit_remain,
+              total: account.credit_total,
+            })}
+          >
+            {formatCredit(account.credit_remain)}/{formatCredit(account.credit_total)}
+          </span>
+        ) : (
+          <span className="text-[12px] text-muted-foreground" title={t("workbuddy.creditUnknownHint")}>—</span>
+        )}
+      </TableCell>
+      <TableCell>
+        <span
+          className={cn(
+            "inline-flex items-center gap-1 whitespace-nowrap rounded-md px-1.5 py-0.5 text-[11px] font-semibold",
+            account.checkin_state === "已签到"
+              ? "bg-emerald-500/12 text-emerald-600 dark:text-emerald-400"
+              : "bg-muted text-muted-foreground",
+          )}
+          title={account.checkin_date ? t("workbuddy.checkinDateHint", { date: account.checkin_date }) : undefined}
+        >
+          {account.checkin_state === "已签到"
+            ? t("workbuddy.checkinDone")
+            : t("workbuddy.checkinPending")}
         </span>
       </TableCell>
       <TableCell>

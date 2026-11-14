@@ -37,6 +37,16 @@ type workBuddyAccountItem struct {
 	ExpiresAt string   `json:"expires_at"`
 	LastError string   `json:"last_error"`
 	ProxyURL  string   `json:"proxy_url"`
+	// CreditRemain/CreditTotal 是该账号的剩余/总积分。CreditKnown 为 false 表示
+	// 上游查询失败或未取到，前端显示为「—」而不是 0/0（0/0 会被误读成额度耗尽）。
+	CreditRemain int64 `json:"credit_remain"`
+	CreditTotal  int64 `json:"credit_total"`
+	CreditKnown  bool  `json:"credit_known"`
+	// CheckinState 取值为「已签到」/「未签到」，CheckinKnown 为 false 表示未知。
+	CheckinState string `json:"checkin_state"`
+	CheckinKnown bool   `json:"checkin_known"`
+	// CheckinDate 是最近一次成功签到的日期（yyyy-mm-dd，本地时区），空表示从未签到。
+	CheckinDate string `json:"checkin_date,omitempty"`
 }
 
 type workBuddyAccountRequest struct {
@@ -83,13 +93,47 @@ func (h *Handler) ListWorkBuddyAccounts(c *gin.Context) {
 			ExpiresAt: row.GetCredential(auth.WorkBuddyExpiresAtCredentialKey),
 			LastError: row.ErrorMessage,
 			ProxyURL:  row.ProxyURL,
+			CheckinDate: row.GetCredential(workBuddyCheckinDateCredentialKey),
 		}
 		if item.Models == nil {
 			item.Models = []string{}
 		}
+		item.CheckinState, item.CheckinKnown = workBuddyCheckinStateFor(item.CheckinDate)
 		items = append(items, item)
 	}
+
+	// 积分为实时上游数据：按当前页账号批量拉取（带短 TTL 缓存），
+	// 失败账号保持 CreditKnown=false，前端显示「—」。
+	if credits := h.fetchWorkBuddyCredits(ctx, h.workBuddyAccountsForRows(rows)); len(credits) > 0 {
+		for i := range items {
+			if credit, ok := credits[items[i].ID]; ok {
+				items[i].CreditRemain = credit.Remain
+				items[i].CreditTotal = credit.Total
+				items[i].CreditKnown = true
+			}
+		}
+	}
 	c.JSON(http.StatusOK, gin.H{"accounts": items})
+}
+
+// workBuddyAccountsForRows 把数据库行映射成 auth.Account 列表，供批量积分查询使用。
+//
+// 走 store 而不是从行里重建：token 刷新会改写内存里的 auth.Account，
+// 用 store 的实例才能拿到最新 access token（否则刚刷过 token 的账号仍会用旧值）。
+func (h *Handler) workBuddyAccountsForRows(rows []*database.AccountRow) []*auth.Account {
+	if h == nil || h.store == nil || len(rows) == 0 {
+		return nil
+	}
+	out := make([]*auth.Account, 0, len(rows))
+	for _, row := range rows {
+		if row == nil {
+			continue
+		}
+		if account := h.store.FindByID(row.ID); account != nil {
+			out = append(out, account)
+		}
+	}
+	return out
 }
 
 // AddWorkBuddyAccount 新增（或按 uid 覆盖）一个 WorkBuddy 账号。

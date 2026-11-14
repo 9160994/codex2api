@@ -261,6 +261,11 @@ func (h *Handler) checkinOneWorkBuddyAccount(ctx context.Context, account *auth.
 		item.Message = err.Error()
 		return item
 	}
+	// 签到成功或「今天已签」都要记日期：列表据此显示「已签到」。
+	// 已签的情况也写一次，弥补历史数据（早期版本没有这个字段）。
+	h.recordWorkBuddyCheckinDate(reqCtx, account)
+	// 签到会发积分，缓存必须失效，否则列表仍显示旧余额。
+	invalidateWorkBuddyCreditCache(account.DBID)
 	if result.Already {
 		item.Status = "already"
 		item.Message = "今天已签到"
