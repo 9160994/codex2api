@@ -196,7 +196,18 @@ function WorkBuddyAccounts({ headerSlot }: { headerSlot?: ReactNode } = {}) {
       (account) => workBuddyExpiryState(account.expires_at, now) === "expired",
     ).length;
     const enabled = accounts.filter((account) => account.enabled !== false).length;
-    return { total: accounts.length, enabled, expired };
+    // 积分汇总只统计「已取到」的账号：把未知账号按 0 计入会让总额看起来凭空少一截。
+    // knownCount 用于在总额旁标注「部分未知」，避免用户把不完整的总和当成真实值。
+    let creditRemain = 0;
+    let creditTotal = 0;
+    let knownCount = 0;
+    for (const account of accounts) {
+      if (!account.credit_known) continue;
+      creditRemain += account.credit_remain ?? 0;
+      creditTotal += account.credit_total ?? 0;
+      knownCount += 1;
+    }
+    return { total: accounts.length, enabled, expired, creditRemain, creditTotal, knownCount };
   }, [accounts, now]);
 
   const filtered = useMemo(() => {
@@ -443,7 +454,8 @@ function WorkBuddyAccounts({ headerSlot }: { headerSlot?: ReactNode } = {}) {
           </div>
         </div>
 
-        <div className="mb-4 grid grid-cols-3 gap-2 sm:gap-3">
+        {/* 与 GrokAccounts 的统计卡同款栅格：窄屏两列，宽屏四列。 */}
+        <div className="mb-4 grid grid-cols-2 gap-2 sm:gap-3 xl:grid-cols-4">
           <CompactStat
             label={t("workbuddy.statTotal")}
             chipLabel={t("workbuddy.filterAll")}
@@ -467,6 +479,23 @@ function WorkBuddyAccounts({ headerSlot }: { headerSlot?: ReactNode } = {}) {
             tone={stats.expired > 0 ? "danger" : "neutral"}
             active={statusFilter === "expired"}
             onClick={() => setStatusFilter(statusFilter === "expired" ? "all" : "expired")}
+          />
+          {/* 积分汇总：全量账号的剩余/总额。任一账号取数失败时标注「部分未知」，
+              避免用户把不完整的合计当成真实值。 */}
+          <CompactStat
+            label={t("workbuddy.statCredit")}
+            chipLabel={
+              stats.knownCount < stats.total
+                ? t("workbuddy.statCreditPartial", { known: stats.knownCount, total: stats.total })
+                : t("workbuddy.statCreditFull")
+            }
+            value={stats.creditRemain}
+            valueText={
+              stats.knownCount > 0
+                ? `${stats.creditRemain.toLocaleString("en-US")} / ${stats.creditTotal.toLocaleString("en-US")}`
+                : "—"
+            }
+            tone={stats.knownCount > 0 ? "neutral" : "warning"}
           />
         </div>
 

@@ -18,6 +18,7 @@ export function CompactStat({
   label,
   chipLabel,
   value,
+  valueText,
   tone,
   details,
   active = false,
@@ -26,6 +27,8 @@ export function CompactStat({
   label: string
   chipLabel?: string
   value: number
+  /** 覆盖默认的纯数字展示（如「13918 / 14238」）。仍用 value 参与无障碍数值语义。 */
+  valueText?: string
   tone: CompactStatTone
   details?: Array<{ label: string; value: number }>
   active?: boolean
@@ -49,7 +52,7 @@ export function CompactStat({
           {label}
         </div>
         <div className="mt-1.5 text-[22px] font-semibold leading-none tabular-nums tracking-tight text-foreground sm:text-[26px]">
-          {value}
+          {valueText ?? value}
         </div>
       </div>
       <div className="flex min-h-[48px] shrink-0 flex-col items-end gap-1 sm:min-h-[54px] sm:gap-1.5">
