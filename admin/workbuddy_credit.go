@@ -109,8 +109,9 @@ func invalidateWorkBuddyCreditCache(id int64) {
 }
 
 // fetchWorkBuddyCredits 并发批量拉取一组账号的积分。
+// forced 为 true 时忽略缓存、强制回源上游（页面刷新用）。
 // 返回 account id → 积分；失败的账号不出现在结果里（前端显示为「—」）。
-func (h *Handler) fetchWorkBuddyCredits(ctx context.Context, accounts []*auth.Account) map[int64]auth.WorkBuddyCredit {
+func (h *Handler) fetchWorkBuddyCredits(ctx context.Context, accounts []*auth.Account, forced bool) map[int64]auth.WorkBuddyCredit {
 	out := make(map[int64]auth.WorkBuddyCredit, len(accounts))
 	if len(accounts) == 0 {
 		return out
@@ -124,14 +125,16 @@ func (h *Handler) fetchWorkBuddyCredits(ctx context.Context, accounts []*auth.Ac
 		if account == nil || account.DBID <= 0 {
 			continue
 		}
-		// 先看缓存。
-		if credit, err, ok := creditCacheGet(account.DBID); ok {
-			if err == nil {
-				mu.Lock()
-				out[account.DBID] = credit
-				mu.Unlock()
+		// 先看缓存（强制刷新时跳过）。
+		if !forced {
+			if credit, err, ok := creditCacheGet(account.DBID); ok {
+				if err == nil {
+					mu.Lock()
+					out[account.DBID] = credit
+					mu.Unlock()
+				}
+				continue
 			}
-			continue
 		}
 		wg.Add(1)
 		go func(acc *auth.Account) {

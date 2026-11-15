@@ -121,6 +121,8 @@ function WorkBuddyAccounts({ headerSlot }: { headerSlot?: ReactNode } = {}) {
   const [busy, setBusy] = useState<{ id: number; action: RowAction } | null>(null);
   const [batchBusy, setBatchBusy] = useState(false);
   const [checkinBusy, setCheckinBusy] = useState(false);
+  // 积分强制刷新中：用于在积分列表头显示一个轻量提示，避免用户以为页面卡住。
+  const [creditsRefreshing, setCreditsRefreshing] = useState(false);
 
   const [proxies, setProxies] = useState<ProxyRow[]>([]);
   const [showAdd, setShowAdd] = useState(false);
@@ -129,13 +131,21 @@ function WorkBuddyAccounts({ headerSlot }: { headerSlot?: ReactNode } = {}) {
 
   const requestRef = useRef<AbortController | null>(null);
 
-  const reload = useCallback(async (options?: { silent?: boolean }) => {
+  // reload 的 refreshCredits 选项：
+  //   undefined / false —— 走服务端 30s 积分缓存（翻页、自动刷新、操作后回填）
+  //   true —— 强制回源上游重算积分（页面打开、用户点刷新按钮）
+  // 区分两者的理由：积分要花一次上游往返，页面每次轮询都强制刷新会把上游打满，
+  // 而用户主动刷新时又必须看到最新余额。
+  const reload = useCallback(async (options?: { silent?: boolean; refreshCredits?: boolean }) => {
     requestRef.current?.abort();
     const controller = new AbortController();
     requestRef.current = controller;
     if (!options?.silent) setLoading(true);
+    if (options?.refreshCredits) setCreditsRefreshing(true);
     try {
-      const response = await api.listWorkBuddyAccounts(controller.signal);
+      const response = await api.listWorkBuddyAccounts(controller.signal, {
+        refreshCredits: options?.refreshCredits === true,
+      });
       if (controller.signal.aborted) return;
       const rows = response.accounts ?? [];
       setAccounts(rows);
@@ -150,12 +160,17 @@ function WorkBuddyAccounts({ headerSlot }: { headerSlot?: ReactNode } = {}) {
       if (controller.signal.aborted) return;
       setError(getErrorMessage(loadError));
     } finally {
-      if (!controller.signal.aborted) setLoading(false);
+      if (!controller.signal.aborted) {
+        setLoading(false);
+        setCreditsRefreshing(false);
+      }
     }
   }, []);
 
+  // 首次进入页面强制刷一次积分：用户刚打开页面时最需要看到真实余额，
+  // 命中缓存反而会显示上一次会话的旧值。
   useEffect(() => {
-    void reload();
+    void reload({ refreshCredits: true });
     return () => requestRef.current?.abort();
   }, [reload]);
 
@@ -303,6 +318,10 @@ function WorkBuddyAccounts({ headerSlot }: { headerSlot?: ReactNode } = {}) {
         failed: summary.failed,
       });
       showToast(detail ? `${message} — ${detail}` : message, summary.failed > 0 ? 'error' : 'success');
+      // 签到成功会发积分、并改变「已签到」状态，两者都要立刻反映到列表。
+      if (summary.checked > 0 || summary.already > 0) {
+        void reload({ silent: true, refreshCredits: true });
+      }
     } catch (checkinError) {
       showToast(getErrorMessage(checkinError), 'error');
     } finally {
@@ -371,7 +390,7 @@ function WorkBuddyAccounts({ headerSlot }: { headerSlot?: ReactNode } = {}) {
         <PageHeader
           title={t("workbuddy.pageTitle")}
           description={t("workbuddy.pageSubtitle")}
-          onRefresh={() => void reload()}
+          onRefresh={() => void reload({ refreshCredits: true })}
           hideTitle
           actionsBelow
           titleAdornment={headerSlot}
@@ -526,7 +545,14 @@ function WorkBuddyAccounts({ headerSlot }: { headerSlot?: ReactNode } = {}) {
                     <TableHead className="text-[13px] font-semibold">{t("workbuddy.colAccount")}</TableHead>
                     <TableHead className="text-[13px] font-semibold">{t("workbuddy.colUid")}</TableHead>
                     <TableHead className="text-[13px] font-semibold">{t("workbuddy.colNickname")}</TableHead>
-                    <TableHead className="text-[13px] font-semibold">{t("workbuddy.colCredit")}</TableHead>
+                    <TableHead className="text-[13px] font-semibold">
+                      <span className="inline-flex items-center gap-1">
+                        {t("workbuddy.colCredit")}
+                        {creditsRefreshing ? (
+                          <Loader2 className="size-3 animate-spin text-muted-foreground" aria-hidden />
+                        ) : null}
+                      </span>
+                    </TableHead>
                     <TableHead className="text-[13px] font-semibold">{t("workbuddy.colCheckin")}</TableHead>
                     <TableHead className="text-[13px] font-semibold">{t("workbuddy.colRealm")}</TableHead>
                     <TableHead className="text-[13px] font-semibold">{t("workbuddy.colStatus")}</TableHead>
@@ -571,12 +597,12 @@ function WorkBuddyAccounts({ headerSlot }: { headerSlot?: ReactNode } = {}) {
         show={showAdd}
         proxies={proxies}
         onClose={() => setShowAdd(false)}
-        onAdded={() => reload({ silent: true })}
+        onAdded={() => reload({ silent: true, refreshCredits: true })}
       />
       <WorkBuddyImportModal
         show={showImport}
         onClose={() => setShowImport(false)}
-        onImported={() => reload({ silent: true })}
+        onImported={() => reload({ silent: true, refreshCredits: true })}
       />
       <WorkBuddyEditModal
         account={editAccount}

@@ -68,8 +68,18 @@ type workBuddyImportRequest struct {
 }
 
 // ListWorkBuddyAccounts 返回 workbuddy 渠道账号列表。
+//
+// refresh=1 时绕过积分缓存、强制回源上游（页面刷新按钮用）。默认走 30s 缓存，
+// 避免每次翻页/自动刷新都打上游。
 func (h *Handler) ListWorkBuddyAccounts(c *gin.Context) {
-	ctx, cancel := context.WithTimeout(c.Request.Context(), 15*time.Second)
+	// 强制刷新要多花一轮上游往返：给更宽的整体超时，否则一页账号容易在
+	// 默认值上被砍掉一半。账号规模小时这点余量足够。
+	forced := c.Query("refresh") == "1" || c.Query("refresh") == "true"
+	timeout := 15 * time.Second
+	if forced {
+		timeout = 30 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(c.Request.Context(), timeout)
 	defer cancel()
 	rows, err := h.db.ListActiveByChannel(ctx, database.UpstreamChannelWorkBuddy)
 	if err != nil {
@@ -104,7 +114,7 @@ func (h *Handler) ListWorkBuddyAccounts(c *gin.Context) {
 
 	// 积分为实时上游数据：按当前页账号批量拉取（带短 TTL 缓存），
 	// 失败账号保持 CreditKnown=false，前端显示「—」。
-	if credits := h.fetchWorkBuddyCredits(ctx, h.workBuddyAccountsForRows(rows)); len(credits) > 0 {
+	if credits := h.fetchWorkBuddyCredits(ctx, h.workBuddyAccountsForRows(rows), forced); len(credits) > 0 {
 		for i := range items {
 			if credit, ok := credits[items[i].ID]; ok {
 				items[i].CreditRemain = credit.Remain

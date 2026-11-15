@@ -760,8 +760,12 @@ export const api = {
   // 单个账号的测试、刷新、编辑走 /accounts/{id}/workbuddy。
   // 启停复用通用接口 toggleAccountEnabled(/accounts/{id}/enable);
   // 模型白名单只能走 updateWorkBuddyAccount —— 通用 /accounts/{id}/models 对中转账号返回 400。
-  listWorkBuddyAccounts: (signal?: AbortSignal) =>
-    request<WorkBuddyAccountsResponse>('/accounts/workbuddy', { signal }),
+  // refreshCredits=true 时服务端跳过积分缓存、强制回源上游（页面刷新用）。
+  listWorkBuddyAccounts: (signal?: AbortSignal, options?: { refreshCredits?: boolean }) =>
+    request<WorkBuddyAccountsResponse>(
+      `/accounts/workbuddy${options?.refreshCredits ? '?refresh=1' : ''}`,
+      { signal },
+    ),
   addWorkBuddyAccount: (data: AddWorkBuddyAccountRequest) =>
     request<WorkBuddyCreateResponse>('/accounts/workbuddy', {
       method: 'POST',
