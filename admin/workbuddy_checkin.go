@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/codex2api/auth"
@@ -171,8 +172,16 @@ func (h *Handler) workBuddyCheckinTargets() []*auth.Account {
 }
 
 // workBuddyCheckinEligible 判断账号是否可参与签到。
+//
+// 必须跳过管理员「停用」的账号：停用写入的是 accounts.enabled=false，在
+// auth.Account 上表现为 DispatchPaused=1（见 store.buildAccountFromRow）。
+// 停用语义是「别再用这个号做任何事」，签到也属于其中——否则用户停用后
+// 每天仍会被签到，违背预期。
 func workBuddyCheckinEligible(account *auth.Account) bool {
 	if account == nil || account.DBID <= 0 {
+		return false
+	}
+	if atomic.LoadInt32(&account.DispatchPaused) != 0 {
 		return false
 	}
 	if !account.IsWorkBuddy() {
